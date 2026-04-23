@@ -1,20 +1,13 @@
 {
   "version": 2,
   "name": "indoor-navigation",
-  "builds": [
+  "buildCommand": null,
+  "outputDirectory": ".",
+  "framework": null,
+  "rewrites": [
     {
-      "src": "indoor.html",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/",
-      "dest": "/indoor.html"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/$1"
+      "source": "/",
+      "destination": "/indoor.html"
     }
   ]
 }
