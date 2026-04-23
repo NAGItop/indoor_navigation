@@ -868,6 +868,7 @@ function planRoute() {
 
     generateSteps(segments, startRoom, endRoom);
     speak(`路线已规划，从${startRoom.name}出发，${floorChanges > 0 ? `途经${floorChanges}次换层，` : ""}前往${endRoom.name}，全程约${distance}米。`);
+    playSuccessSound(); // 播放成功提示音
     showStepPanel();
     hapticFeedback("success");
 }
@@ -999,23 +1000,99 @@ function toggleVoice() {
     const icon = btn?.querySelector(".voice-icon");
     if (btn)  btn.setAttribute("aria-pressed", state.voiceEnabled);
     if (icon) icon.textContent = state.voiceEnabled ? "🔊" : "🔇";
-    if (state.voiceEnabled) speak("语音导航已开启");
+    if (state.voiceEnabled) {
+        initAudio(); // 初始化音频上下文
+        playSuccessSound(); // 播放开启提示音
+    }
     hapticFeedback("light");
+}
+
+// 音频上下文（用于播放提示音）
+let audioCtx = null;
+
+// 初始化音频上下文（需要用户交互后才能创建）
+function initAudio() {
+    if (!audioCtx && typeof AudioContext !== 'undefined') {
+        audioCtx = new AudioContext();
+    } else if (!audioCtx && typeof webkitAudioContext !== 'undefined') {
+        audioCtx = new webkitAudioContext();
+    }
+}
+
+// 播放提示音（使用 Web Audio API 生成）
+function playBeep(frequency = 800, duration = 0.15, type = 'sine') {
+    if (!state.voiceEnabled) return;
+    initAudio();
+    if (!audioCtx) return;
+    
+    // 恢复音频上下文（可能被浏览器暂停）
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    
+    osc.type = type;
+    osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+    
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+// 播放成功提示音
+function playSuccessSound() {
+    if (!state.voiceEnabled) return;
+    playBeep(600, 0.1, 'sine');
+    setTimeout(() => playBeep(800, 0.2, 'sine'), 100);
+}
+
+// 播放步骤提示音
+function playStepSound() {
+    playBeep(1000, 0.08, 'sine');
 }
 
 function speak(text) {
     const el = document.querySelector(".voice-text");
     if (el) el.textContent = text;
+    
+    // 播放提示音作为替代
+    if (state.voiceEnabled) {
+        playBeep(800, 0.1, 'sine');
+    }
+    
+    // 尝试使用语音合成（可能不支持）
     if (!state.voiceEnabled || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utt = new SpeechSynthesisUtterance(text);
-    utt.lang = "zh-CN"; utt.rate = 1.05; utt.pitch = 1;
-    window.speechSynthesis.speak(utt);
+    
+    // 检查是否是移动设备，移动设备上 speechSynthesis 经常有问题
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+        // 移动设备只播放提示音，不使用语音合成
+        return;
+    }
+    
+    try {
+        window.speechSynthesis.cancel();
+        const utt = new SpeechSynthesisUtterance(text);
+        utt.lang = "zh-CN"; utt.rate = 1.05; utt.pitch = 1;
+        window.speechSynthesis.speak(utt);
+    } catch (e) {
+        // 语音合成失败，静默处理（已经播放了提示音）
+    }
 }
 
 function speakCurrentStep() {
     const step = state.pathSteps[state.currentStep];
-    if (step) speak(`第${state.currentStep+1}步：${step.instruction}。${step.hint}`);
+    if (step) {
+        speak(`第${state.currentStep+1}步：${step.instruction}。${step.hint}`);
+        playStepSound();
+    }
 }
 
 function hapticFeedback(type = "light") {
