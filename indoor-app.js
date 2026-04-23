@@ -1116,17 +1116,106 @@ function playVoiceOnSound() {
     setTimeout(() => playTone(1047, 0.3), 1200); // C6 - 启
 }
 
-function speak(text) {
+// 百度语音合成配置
+const BAIDU_TTS_CONFIG = {
+    appId: '7664376',
+    apiKey: 'jZie8aJhPhjd4elJIpWrh41J',
+    secretKey: 'TYSz5twRYNbKWF5DLYDZucdF9VlL1gyS'
+};
+
+// 存储 access token
+let baiduAccessToken = null;
+let tokenExpireTime = 0;
+
+// 获取百度 access token
+async function getBaiduAccessToken() {
+    // 如果 token 还有效，直接返回
+    if (baiduAccessToken && Date.now() < tokenExpireTime) {
+        return baiduAccessToken;
+    }
+    
+    try {
+        const response = await fetch('https://aip.baidubce.com/oauth/2.0/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                grant_type: 'client_credentials',
+                client_id: BAIDU_TTS_CONFIG.apiKey,
+                client_secret: BAIDU_TTS_CONFIG.secretKey
+            })
+        });
+        
+        const data = await response.json();
+        if (data.access_token) {
+            baiduAccessToken = data.access_token;
+            // token 有效期 30 天，这里设置为 29 天后过期
+            tokenExpireTime = Date.now() + (29 * 24 * 60 * 60 * 1000);
+            return baiduAccessToken;
+        }
+    } catch (e) {
+        console.log('获取百度 token 失败:', e);
+    }
+    return null;
+}
+
+// 使用百度语音合成播报
+async function speakWithBaidu(text) {
+    const token = await getBaiduAccessToken();
+    if (!token) {
+        console.log('无法获取百度语音合成 token');
+        return false;
+    }
+    
+    try {
+        // 构建语音合成 URL
+        const params = new URLSearchParams({
+            tex: text,
+            tok: token,
+            cuid: BAIDU_TTS_CONFIG.appId,
+            ctp: '1',
+            lan: 'zh',
+            spd: '5',
+            pit: '5',
+            vol: '15',
+            per: '0',
+            aue: '3'
+        });
+        
+        const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
+        
+        // 创建音频元素播放
+        const audio = new Audio();
+        audio.src = ttsUrl;
+        
+        // 确保音频上下文已恢复（移动端需要）
+        const ctx = initAudio();
+        if (ctx && ctx.state === 'suspended') {
+            await ctx.resume();
+        }
+        
+        await audio.play();
+        return true;
+    } catch (e) {
+        console.log('百度语音合成播放失败:', e);
+        return false;
+    }
+}
+
+// 语音播报
+async function speak(text) {
     const el = document.querySelector(".voice-text");
     if (el) el.textContent = text;
     
     if (!state.voiceEnabled) return;
     
-    // 播放提示音（所有设备都支持）
-    playBeep();
+    // 先尝试百度语音合成
+    const baiduSuccess = await speakWithBaidu(text);
     
-    // 尝试使用语音合成（桌面端支持）
-    if (window.speechSynthesis) {
+    // 如果百度失败，回退到浏览器自带语音合成
+    if (!baiduSuccess && window.speechSynthesis) {
         try {
             window.speechSynthesis.cancel();
             const utt = new SpeechSynthesisUtterance(text);
@@ -1135,7 +1224,7 @@ function speak(text) {
             utt.pitch = 1;
             window.speechSynthesis.speak(utt);
         } catch (e) {
-            // 语音合成失败，但至少已经播放了提示音和显示了文字
+            console.log('浏览器语音合成失败:', e);
         }
     }
 }
@@ -1231,15 +1320,17 @@ function init() {
     // 如果语音默认开启，监听首次用户交互来初始化音频并播报
     if (state.voiceEnabled) {
         let hasAnnounced = false;
-        const initAudioOnInteraction = () => {
+        const initAudioOnInteraction = async () => {
             if (hasAnnounced) return;
             hasAnnounced = true;
             
             initAudio();
+            // 预获取百度 token，为后续播报做准备
+            await getBaiduAccessToken();
             // 延迟一点播放，确保音频上下文已恢复
             setTimeout(() => {
                 speak("语音导航已开启");
-            }, 100);
+            }, 200);
             
             document.removeEventListener("click", initAudioOnInteraction);
             document.removeEventListener("touchstart", initAudioOnInteraction);
