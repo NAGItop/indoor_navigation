@@ -1001,10 +1001,10 @@ function updateStepCounter() {
 // ============================================
 function toggleVoice() {
     state.voiceEnabled = !state.voiceEnabled;
-    const btn  = document.getElementById("voiceToggle");
-    const icon = btn?.querySelector(".voice-icon");
-    if (btn)  btn.setAttribute("aria-pressed", state.voiceEnabled);
-    if (icon) icon.textContent = state.voiceEnabled ? "🔊" : "🔇";
+    
+    // 更新按钮显示状态
+    updateVoiceButton();
+    
     if (state.voiceEnabled) {
         // 立即初始化并播放（必须在用户点击事件里同步执行）
         initAudio();
@@ -1149,6 +1149,35 @@ function bindEvents() {
 }
 
 // ============================================
+// 语音按钮状态同步
+// ============================================
+function updateVoiceButton() {
+    const btn = document.getElementById("voiceToggle");
+    const icon = btn?.querySelector(".voice-icon");
+    const voiceText = document.querySelector(".voice-text");
+    
+    if (!btn || !icon) return;
+    
+    if (state.voiceEnabled) {
+        btn.classList.add("active");
+        btn.setAttribute("aria-pressed", "true");
+        btn.setAttribute("aria-label", "语音导航已开启");
+        icon.textContent = "🔊";
+        if (voiceText) {
+            voiceText.textContent = "语音已开启，点击\"开始规划路线\"激活提示音";
+        }
+    } else {
+        btn.classList.remove("active");
+        btn.setAttribute("aria-pressed", "false");
+        btn.setAttribute("aria-label", "语音导航已关闭");
+        icon.textContent = "🔇";
+        if (voiceText) {
+            voiceText.textContent = "语音导航已关闭";
+        }
+    }
+}
+
+// ============================================
 // 初始化
 // ============================================
 function init() {
@@ -1156,6 +1185,21 @@ function init() {
     initSelectors();
     initFloorButtons();
     bindEvents();
+    
+    // 同步语音按钮初始状态
+    updateVoiceButton();
+    
+    // 如果语音默认开启，监听首次用户交互来初始化音频上下文
+    if (state.voiceEnabled) {
+        const initAudioOnInteraction = () => {
+            initAudio();
+            document.removeEventListener("click", initAudioOnInteraction);
+            document.removeEventListener("touchstart", initAudioOnInteraction);
+        };
+        document.addEventListener("click", initAudioOnInteraction);
+        document.addEventListener("touchstart", initAudioOnInteraction);
+    }
+    
     console.log("🏫 室内导航系统 v3.0（多楼层）已启动");
     console.log(`楼层数：3，每层地图：${ROWS}×${COLS}，楼梯节点：${Object.keys(STAIR_NODES).length}处`);
 }
