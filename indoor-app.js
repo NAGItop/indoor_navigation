@@ -1001,100 +1001,70 @@ function toggleVoice() {
     if (btn)  btn.setAttribute("aria-pressed", state.voiceEnabled);
     if (icon) icon.textContent = state.voiceEnabled ? "🔊" : "🔇";
     if (state.voiceEnabled) {
-        // 移动端：必须在用户点击事件里直接初始化音频
-        const initialized = initAudio();
-        if (initialized) {
-            // 延迟一点播放，确保音频上下文已恢复
-            setTimeout(() => playSuccessSound(), 100);
-        }
+        // 立即初始化并播放（必须在用户点击事件里同步执行）
+        initAudio();
+        playSuccessSound();
     }
     hapticFeedback("light");
 }
 
-// 音频上下文（用于播放提示音）
+// 创建简单的提示音（使用 Web Audio API，但简化实现）
 let audioCtx = null;
-let audioInitialized = false;
 
-// 初始化音频上下文（需要用户交互后才能创建）
+// 初始化音频（在用户交互时调用）
 function initAudio() {
-    if (audioInitialized) return true;
-    
-    try {
-        if (!audioCtx && typeof AudioContext !== 'undefined') {
-            audioCtx = new AudioContext();
-        } else if (!audioCtx && typeof webkitAudioContext !== 'undefined') {
-            audioCtx = new webkitAudioContext();
+    if (!audioCtx) {
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (e) {
+            console.log('音频不支持');
         }
-        
-        if (audioCtx) {
-            audioInitialized = true;
-            // 立即尝试恢复（某些浏览器需要）
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume().catch(() => {});
-            }
-            return true;
-        }
-    } catch (e) {
-        console.log('音频初始化失败:', e);
     }
-    return false;
+    return audioCtx;
 }
 
-// 播放提示音（使用 Web Audio API 生成）
-function playBeep(frequency = 800, duration = 0.15, type = 'sine') {
+// 播放提示音
+function playBeep() {
     if (!state.voiceEnabled) return;
     
-    // 确保音频已初始化
-    if (!initAudio()) return;
-    if (!audioCtx) return;
+    const ctx = initAudio();
+    if (!ctx) return;
     
-    // 移动端：必须在用户交互后恢复音频上下文
-    const resumeAudio = () => {
-        if (audioCtx.state === 'suspended') {
-            return audioCtx.resume();
-        }
-        return Promise.resolve();
-    };
+    // 恢复音频上下文（移动端必需）
+    if (ctx.state === 'suspended') {
+        ctx.resume();
+    }
     
-    const playSound = () => {
-        try {
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-            
-            osc.type = type;
-            osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
-            
-            // 移动端音量调大一些
-            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-            const volume = isMobile ? 0.5 : 0.3;
-            
-            gain.gain.setValueAtTime(volume, audioCtx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
-            
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-            
-            osc.start(audioCtx.currentTime);
-            osc.stop(audioCtx.currentTime + duration);
-        } catch (e) {
-            console.log('播放提示音失败:', e);
-        }
-    };
-    
-    // 先恢复再播放
-    resumeAudio().then(playSound).catch(playSound);
+    try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.value = 600; // 降低频率，声音更柔和
+        
+        gain.gain.setValueAtTime(0.2, ctx.currentTime); // 降低音量
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1); // 缩短时长
+        
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.1);
+    } catch (e) {
+        // 忽略错误
+    }
 }
 
 // 播放成功提示音
 function playSuccessSound() {
     if (!state.voiceEnabled) return;
-    playBeep(600, 0.1, 'sine');
-    setTimeout(() => playBeep(800, 0.2, 'sine'), 100);
+    playBeep();
+    setTimeout(() => playBeep(), 120);
 }
 
 // 播放步骤提示音
 function playStepSound() {
-    playBeep(1000, 0.08, 'sine');
+    playBeep();
 }
 
 function speak(text) {
