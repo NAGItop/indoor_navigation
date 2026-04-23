@@ -808,6 +808,11 @@ function initSelectors() {
 }
 
 function planRoute() {
+    // 移动端：首次点击时初始化音频（用户交互后才能播放声音）
+    if (state.voiceEnabled) {
+        initAudio();
+    }
+    
     const startId = document.getElementById("startSelect")?.value;
     const endId   = document.getElementById("endSelect")?.value;
 
