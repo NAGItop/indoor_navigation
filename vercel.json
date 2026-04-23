@@ -3,11 +3,15 @@
   "name": "indoor-navigation",
   "builds": [
     {
-      "src": "index.html",
+      "src": "indoor.html",
       "use": "@vercel/static"
     }
   ],
   "routes": [
+    {
+      "src": "/",
+      "dest": "/indoor.html"
+    },
     {
       "src": "/(.*)",
       "dest": "/$1"
