@@ -1072,32 +1072,71 @@ function playStepSound() {
     playBeep();
 }
 
+// 播放特定频率的提示音（用于不同语义）
+function playTone(frequency, duration, type = 'sine') {
+    if (!state.voiceEnabled) return;
+    
+    const ctx = initAudio();
+    if (!ctx) return;
+    
+    if (ctx.state === 'suspended') {
+        ctx.resume();
+    }
+    
+    try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc.type = type;
+        osc.frequency.value = frequency;
+        
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
+        
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + duration);
+    } catch (e) {
+        // 忽略错误
+    }
+}
+
+// 用不同音调组合模拟"语音导航已开启"
+function playVoiceOnSound() {
+    if (!state.voiceEnabled) return;
+    // 音调序列："语音-导航-已-开启"
+    playTone(523, 0.15); // C5 - 语
+    setTimeout(() => playTone(659, 0.15), 150); // E5 - 音
+    setTimeout(() => playTone(784, 0.2), 350); // G5 - 导
+    setTimeout(() => playTone(659, 0.15), 550); // E5 - 航
+    setTimeout(() => playTone(523, 0.15), 750); // C5 - 已
+    setTimeout(() => playTone(784, 0.25), 950); // G5 - 开
+    setTimeout(() => playTone(1047, 0.3), 1200); // C6 - 启
+}
+
 function speak(text) {
     const el = document.querySelector(".voice-text");
     if (el) el.textContent = text;
     
-    // 播放提示音作为替代
-    if (state.voiceEnabled) {
-        playBeep(800, 0.1, 'sine');
-    }
+    if (!state.voiceEnabled) return;
     
-    // 尝试使用语音合成（可能不支持）
-    if (!state.voiceEnabled || !window.speechSynthesis) return;
+    // 播放提示音（所有设备都支持）
+    playBeep();
     
-    // 检查是否是移动设备，移动设备上 speechSynthesis 经常有问题
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if (isMobile) {
-        // 移动设备只播放提示音，不使用语音合成
-        return;
-    }
-    
-    try {
-        window.speechSynthesis.cancel();
-        const utt = new SpeechSynthesisUtterance(text);
-        utt.lang = "zh-CN"; utt.rate = 1.05; utt.pitch = 1;
-        window.speechSynthesis.speak(utt);
-    } catch (e) {
-        // 语音合成失败，静默处理（已经播放了提示音）
+    // 尝试使用语音合成（桌面端支持）
+    if (window.speechSynthesis) {
+        try {
+            window.speechSynthesis.cancel();
+            const utt = new SpeechSynthesisUtterance(text);
+            utt.lang = "zh-CN"; 
+            utt.rate = 1.05; 
+            utt.pitch = 1;
+            window.speechSynthesis.speak(utt);
+        } catch (e) {
+            // 语音合成失败，但至少已经播放了提示音和显示了文字
+        }
     }
 }
 
@@ -1200,7 +1239,6 @@ function init() {
             // 延迟一点播放，确保音频上下文已恢复
             setTimeout(() => {
                 speak("语音导航已开启");
-                playSuccessSound();
             }, 100);
             
             document.removeEventListener("click", initAudioOnInteraction);
