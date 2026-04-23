@@ -1001,49 +1001,88 @@ function toggleVoice() {
     if (btn)  btn.setAttribute("aria-pressed", state.voiceEnabled);
     if (icon) icon.textContent = state.voiceEnabled ? "🔊" : "🔇";
     if (state.voiceEnabled) {
-        initAudio(); // 初始化音频上下文
-        playSuccessSound(); // 播放开启提示音
+        // 移动端：必须在用户点击事件里直接初始化音频
+        const initialized = initAudio();
+        if (initialized) {
+            // 延迟一点播放，确保音频上下文已恢复
+            setTimeout(() => playSuccessSound(), 100);
+        }
     }
     hapticFeedback("light");
 }
 
 // 音频上下文（用于播放提示音）
 let audioCtx = null;
+let audioInitialized = false;
 
 // 初始化音频上下文（需要用户交互后才能创建）
 function initAudio() {
-    if (!audioCtx && typeof AudioContext !== 'undefined') {
-        audioCtx = new AudioContext();
-    } else if (!audioCtx && typeof webkitAudioContext !== 'undefined') {
-        audioCtx = new webkitAudioContext();
+    if (audioInitialized) return true;
+    
+    try {
+        if (!audioCtx && typeof AudioContext !== 'undefined') {
+            audioCtx = new AudioContext();
+        } else if (!audioCtx && typeof webkitAudioContext !== 'undefined') {
+            audioCtx = new webkitAudioContext();
+        }
+        
+        if (audioCtx) {
+            audioInitialized = true;
+            // 立即尝试恢复（某些浏览器需要）
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(() => {});
+            }
+            return true;
+        }
+    } catch (e) {
+        console.log('音频初始化失败:', e);
     }
+    return false;
 }
 
 // 播放提示音（使用 Web Audio API 生成）
 function playBeep(frequency = 800, duration = 0.15, type = 'sine') {
     if (!state.voiceEnabled) return;
-    initAudio();
+    
+    // 确保音频已初始化
+    if (!initAudio()) return;
     if (!audioCtx) return;
     
-    // 恢复音频上下文（可能被浏览器暂停）
-    if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-    }
+    // 移动端：必须在用户交互后恢复音频上下文
+    const resumeAudio = () => {
+        if (audioCtx.state === 'suspended') {
+            return audioCtx.resume();
+        }
+        return Promise.resolve();
+    };
     
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
+    const playSound = () => {
+        try {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = type;
+            osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+            
+            // 移动端音量调大一些
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            const volume = isMobile ? 0.5 : 0.3;
+            
+            gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.start(audioCtx.currentTime);
+            osc.stop(audioCtx.currentTime + duration);
+        } catch (e) {
+            console.log('播放提示音失败:', e);
+        }
+    };
     
-    osc.type = type;
-    osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
-    
-    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
-    
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + duration);
+    // 先恢复再播放
+    resumeAudio().then(playSound).catch(playSound);
 }
 
 // 播放成功提示音
