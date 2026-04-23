@@ -1,0 +1,11 @@
+{
+  "name": "indoor-navigation",
+  "version": "1.0.0",
+  "description": "专为视障人士设计的室内外一体化导航系统",
+  "scripts": {
+    "start": "npx serve ."
+  },
+  "keywords": ["accessibility", "navigation", "indoor"],
+  "author": "",
+  "license": "MIT"
+}

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="教学楼多楼层室内导航系统 - 安全出行助手">
+    <meta name="theme-color" content="#050a14">
+    <title>室内导航 - 教学楼</title>
+    <link rel="stylesheet" href="indoor-styles.css">
+    <style>
+        /* ── 楼层切换器 ─────────────────────────────── */
+        .floor-switcher {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            background: rgba(255,255,255,0.06);
+            border-radius: 0.625rem;
+            padding: 0.25rem;
+        }
+        .floor-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 0.5rem;
+            border: 1.5px solid transparent;
+            background: transparent;
+            color: var(--color-text-secondary);
+            font-size: 0.85rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.18s;
+            user-select: none;
+        }
+        .floor-btn:hover {
+            background: rgba(59,130,246,0.15);
+            color: var(--color-primary-light);
+        }
+        .floor-btn.is-active {
+            background: var(--color-primary);
+            color: #fff;
+            border-color: var(--color-primary-light);
+            box-shadow: 0 0 12px rgba(59,130,246,0.5);
+        }
+        .floor-label {
+            font-size: 0.7rem;
+            color: var(--color-text-muted);
+            padding: 0 0.25rem;
+        }
+
+        /* ── 步骤楼层标签 ────────────────────────────── */
+        .step-floor-tag {
+            flex-shrink: 0;
+            padding: 0.15rem 0.45rem;
+            border-radius: 0.375rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            background: rgba(59,130,246,0.15);
+            color: var(--color-primary-light);
+            border: 1px solid rgba(59,130,246,0.25);
+        }
+        .step-floor-tag.is-change {
+            background: rgba(245,158,11,0.18);
+            color: #f59e0b;
+            border-color: rgba(245,158,11,0.35);
+            animation: pulse-tag 0.8s ease infinite alternate;
+        }
+        @keyframes pulse-tag {
+            from { box-shadow: 0 0 0 0 rgba(245,158,11,0.3); }
+            to   { box-shadow: 0 0 8px 2px rgba(245,158,11,0.5); }
+        }
+        .step-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.6rem;
+        }
+        .step-content { flex: 1; min-width: 0; }
+
+        /* ── 换层步骤高亮 ───────────────────────────── */
+        .step-item.is-active .step-floor-tag.is-change {
+            font-size: 0.75rem;
+        }
+
+        /* ── 多楼层路线信息 ─────────────────────────── */
+        .route-info-detail {
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <!-- 屏幕阅读器播报区 -->
+    <div id="floorAnnounce" role="status" aria-live="polite" class="sr-only"></div>
+
+    <div class="app-container">
+        <!-- 头部导航 -->
+        <header class="page-header">
+            <a href="index.html" class="back-btn" aria-label="返回主页">
+                <span aria-hidden="true">←</span>
+            </a>
+            <h1 class="page-title">
+                <span aria-hidden="true">🏫</span>
+                教学楼室内导航
+            </h1>
+            <div class="header-actions">
+                <button type="button" id="voiceToggle" class="icon-btn"
+                        aria-label="开启语音导航" aria-pressed="false">
+                    <span class="voice-icon" aria-hidden="true">🔇</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 地图区域 -->
+            <div class="map-section">
+                <div class="canvas-container" role="img" aria-label="教学楼室内平面图">
+                    <canvas id="mapCanvas"></canvas>
+
+                    <!-- 楼层切换器（地图左上角叠加） -->
+                    <div class="map-floor-overlay"
+                         style="position:absolute;top:0.6rem;left:0.6rem;z-index:10;">
+                        <div class="floor-switcher" role="group" aria-label="楼层切换">
+                            <span class="floor-label">楼层</span>
+                            <button type="button" class="floor-btn" data-floor="3" aria-label="第3层">3F</button>
+                            <button type="button" class="floor-btn" data-floor="2" aria-label="第2层">2F</button>
+                            <button type="button" class="floor-btn is-active" data-floor="1" aria-label="第1层">1F</button>
+                        </div>
+                    </div>
+
+                    <!-- 地图控制按钮 -->
+                    <div class="map-controls">
+                        <button type="button" id="zoomIn"    class="map-control-btn" aria-label="放大地图">+</button>
+                        <button type="button" id="zoomOut"   class="map-control-btn" aria-label="缩小地图">−</button>
+                        <button type="button" id="resetView" class="map-control-btn" aria-label="重置视图">⌂</button>
+                    </div>
+                </div>
+
+                <!-- 语音导航提示条 -->
+                <div id="voicePanel" class="voice-panel" aria-live="polite" aria-atomic="true">
+                    <div class="voice-status">
+                        <span class="voice-wave" aria-hidden="true"></span>
+                        <span class="voice-text">选择起终点后点击"开始规划路线"</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 路线规划面板 -->
+            <div class="planning-panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span aria-hidden="true">🧭</span>
+                        路线规划
+                    </h2>
+                    <button type="button" id="quickSwap" class="icon-btn"
+                            aria-label="交换起点和终点">
+                        <span aria-hidden="true">⇅</span>
+                    </button>
+                </div>
+
+                <!-- 起点/终点选择（按楼层分组） -->
+                <div class="location-selector">
+                    <div class="location-row">
+                        <span class="location-marker start" aria-hidden="true"></span>
+                        <div class="select-wrap">
+                            <label for="startSelect" class="sr-only">选择起点（按楼层分组）</label>
+                            <select id="startSelect" class="location-select">
+                                <option value="" disabled selected>🚩 选择起点</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="location-divider" aria-hidden="true">
+                        <span class="divider-line"></span>
+                        <span class="divider-arrow">↓</span>
+                        <span class="divider-line"></span>
+                    </div>
+
+                    <div class="location-row">
+                        <span class="location-marker end" aria-hidden="true"></span>
+                        <div class="select-wrap">
+                            <label for="endSelect" class="sr-only">选择终点（按楼层分组）</label>
+                            <select id="endSelect" class="location-select">
+                                <option value="" disabled selected>🎯 选择终点</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 操作按钮 -->
+                <div class="action-buttons">
+                    <button type="button" id="planBtn" class="btn btn-primary btn-large">
+                        <span aria-hidden="true">🚀</span>
+                        开始规划路线
+                    </button>
+                    <button type="button" id="clearBtn" class="btn btn-ghost">
+                        <span aria-hidden="true">🗑️</span>
+                        清除路线
+                    </button>
+                </div>
+
+                <!-- 路线结果 -->
+                <div id="routeResult" class="route-result" role="status" aria-live="polite">
+                    <div class="result-placeholder">
+                        <span class="placeholder-icon" aria-hidden="true">🗺️</span>
+                        <p>支持跨楼层路线规划，途经楼梯自动换层</p>
+                    </div>
+                </div>
+
+                <!-- 图例 -->
+                <div class="legend-section">
+                    <h3 class="legend-title">图例说明</h3>
+                    <div class="legend-grid">
+                        <div class="legend-item">
+                            <span class="legend-color" style="background:#1e3a5f;" aria-hidden="true"></span>
+                            <span class="legend-label">教室</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background:#1a2744;" aria-hidden="true"></span>
+                            <span class="legend-label">走廊</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background:#2d4a1e;" aria-hidden="true"></span>
+                            <span class="legend-label">楼梯间</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background:#1a3320;" aria-hidden="true"></span>
+                            <span class="legend-label">卫生间</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background:#2d1a3a;" aria-hidden="true"></span>
+                            <span class="legend-label">办公室</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background:#050a14;" aria-hidden="true"></span>
+                            <span class="legend-label">墙壁</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-dot" style="background:#10b981;" aria-hidden="true"></span>
+                            <span class="legend-label">起点 S</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-dot" style="background:#f97316;" aria-hidden="true"></span>
+                            <span class="legend-label">终点 E</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-dot" style="background:#f59e0b;" aria-hidden="true"></span>
+                            <span class="legend-label">楼梯节点 🪜</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 无障碍提示 -->
+                <div class="accessibility-tips">
+                    <h3 class="tips-title">
+                        <span aria-hidden="true">♿</span>
+                        无障碍提示
+                    </h3>
+                    <ul class="tips-list">
+                        <li>地图左上角按钮可切换楼层查看（或按键盘 1/2/3）</li>
+                        <li>路线规划后，步进导航会自动同步切换楼层地图</li>
+                        <li>楼梯间均配备双侧扶手及语音播报装置</li>
+                        <li>每层卫生间均为无障碍设计</li>
+                        <li>路线中如有换层，导航会明确提示"上楼至X层"</li>
+                    </ul>
+                </div>
+
+                <!-- 快捷键说明 -->
+                <div class="accessibility-tips" style="margin-top:0.75rem;">
+                    <h3 class="tips-title">
+                        <span aria-hidden="true">⌨️</span>
+                        快捷键
+                    </h3>
+                    <ul class="tips-list">
+                        <li>← / → 或空格键：上/下一步导航</li>
+                        <li>1 / 2 / 3：切换楼层地图</li>
+                        <li>Ctrl+V：开关语音导航</li>
+                        <li>Esc：关闭步进面板</li>
+                    </ul>
+                </div>
+            </div>
+        </main>
+
+        <!-- 步进导航面板 -->
+        <div id="stepPanel" class="step-panel is-hidden"
+             role="region" aria-label="步进导航指引">
+            <div class="step-header">
+                <h3 class="step-title">
+                    <span aria-hidden="true">🗺️</span>
+                    路线指引
+                </h3>
+                <button type="button" id="closeStep" class="icon-btn" aria-label="关闭步进面板">
+                    <span aria-hidden="true">✕</span>
+                </button>
+            </div>
+            <div id="stepList" class="step-list" aria-live="polite"></div>
+            <div class="step-actions">
+                <button type="button" id="prevStep" class="btn btn-ghost" disabled>
+                    <span aria-hidden="true">←</span>
+                    上一步
+                </button>
+                <span id="stepCounter" class="step-counter" aria-live="polite">1 / 1</span>
+                <button type="button" id="nextStep" class="btn btn-primary">
+                    下一步
+                    <span aria-hidden="true">→</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="indoor-app.js"></script>
+</body>
+</html>

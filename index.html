@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="安全出行助手 - 视障人士室内外导航应用">
+    <meta name="theme-color" content="#08111f">
+    <title>安全出行助手</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- 预加载关键资源 -->
+    <link rel="preconnect" href="https://webapi.amap.com">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 加载动画 -->
+        <div id="loadingScreen" class="loading-screen" aria-hidden="true">
+            <div class="loading-spinner"></div>
+            <p>正在加载...</p>
+        </div>
+
+        <!-- 主应用面板 -->
+        <main class="main-panel">
+            <!-- 登录/注册视图 -->
+            <section id="authView" class="view auth-view" aria-label="用户认证">
+                <header class="auth-header">
+                    <div class="logo">
+                        <svg class="logo-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                            <circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/>
+                            <path d="M24 12v12l8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        <h1>安全出行助手</h1>
+                    </div>
+                    <p class="tagline">为视障人士提供安全、便捷的导航服务</p>
+                </header>
+
+                <!-- 标签页切换 -->
+                <nav class="tab-nav" role="tablist" aria-label="登录与注册">
+                    <button type="button" class="tab-btn is-active" data-tab="login" role="tab" aria-selected="true" id="tab-login">
+                        <span class="tab-icon" aria-hidden="true">👤</span>
+                        登录
+                    </button>
+                    <button type="button" class="tab-btn" data-tab="register" role="tab" aria-selected="false" id="tab-register">
+                        <span class="tab-icon" aria-hidden="true">✨</span>
+                        注册
+                    </button>
+                </nav>
+
+                <!-- 状态提示 -->
+                <div id="statusMessage" class="status-toast" role="alert" aria-live="polite"></div>
+
+                <!-- 登录表单 -->
+                <form id="loginForm" class="auth-form" autocomplete="off" aria-labelledby="tab-login">
+                    <fieldset class="form-fieldset">
+                        <legend class="sr-only">登录信息</legend>
+                        
+                        <div class="input-group">
+                            <label for="loginUsername" class="input-label">
+                                <span class="label-text">用户名</span>
+                                <span class="label-hint">3-18位字母或数字</span>
+                            </label>
+                            <div class="input-wrap">
+                                <span class="input-icon" aria-hidden="true">👤</span>
+                                <input 
+                                    type="text" 
+                                    id="loginUsername" 
+                                    name="username" 
+                                    placeholder="请输入用户名"
+                                    required
+                                    autocomplete="username"
+                                    aria-describedby="loginUsernameHint"
+                                    class="input-field"
+                                >
+                            </div>
+                            <span id="loginUsernameHint" class="input-hint"></span>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="loginPassword" class="input-label">
+                                <span class="label-text">密码</span>
+                            </label>
+                            <div class="input-wrap">
+                                <span class="input-icon" aria-hidden="true">🔒</span>
+                                <input 
+                                    type="password" 
+                                    id="loginPassword" 
+                                    name="password" 
+                                    placeholder="请输入密码"
+                                    required
+                                    autocomplete="current-password"
+                                    class="input-field"
+                                >
+                                <button type="button" class="toggle-btn" data-target="loginPassword" aria-label="显示密码">
+                                    <span class="toggle-icon">👁️</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="form-options">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="rememberMe" name="rememberMe" class="checkbox-input">
+                                <span class="checkbox-custom" aria-hidden="true"></span>
+                                <span>记住登录状态</span>
+                            </label>
+                            <button type="button" class="text-btn" id="fillDemoBtn">使用演示账号</button>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-large">
+                            <span class="btn-icon" aria-hidden="true">🚀</span>
+                            进入系统
+                        </button>
+                    </fieldset>
+                </form>
+
+                <!-- 注册表单 -->
+                <form id="registerForm" class="auth-form is-hidden" autocomplete="off" aria-labelledby="tab-register">
+                    <fieldset class="form-fieldset">
+                        <legend class="sr-only">注册信息</legend>
+                        
+                        <div class="input-group">
+                            <label for="registerDisplayName" class="input-label">
+                                <span class="label-text">昵称</span>
+                            </label>
+                            <div class="input-wrap">
+                                <span class="input-icon" aria-hidden="true">😊</span>
+                                <input 
+                                    type="text" 
+                                    id="registerDisplayName" 
+                                    name="displayName" 
+                                    placeholder="例如：小陈"
+                                    required
+                                    class="input-field"
+                                >
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="registerUsername" class="input-label">
+                                <span class="label-text">用户名</span>
+                                <span class="label-hint">3-18位字母或数字</span>
+                            </label>
+                            <div class="input-wrap">
+                                <span class="input-icon" aria-hidden="true">👤</span>
+                                <input 
+                                    type="text" 
+                                    id="registerUsername" 
+                                    name="username" 
+                                    placeholder="请设置用户名"
+                                    required
+                                    autocomplete="username"
+                                    pattern="[a-zA-Z0-9]{3,18}"
+                                    class="input-field"
+                                >
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="registerPassword" class="input-label">
+                                <span class="label-text">密码</span>
+                                <span class="label-hint">至少6位</span>
+                            </label>
+                            <div class="input-wrap">
+                                <span class="input-icon" aria-hidden="true">🔒</span>
+                                <input 
+                                    type="password" 
+                                    id="registerPassword" 
+                                    name="password" 
+                                    placeholder="请设置密码"
+                                    required
+                                    minlength="6"
+                                    autocomplete="new-password"
+                                    class="input-field"
+                                >
+                                <button type="button" class="toggle-btn" data-target="registerPassword" aria-label="显示密码">
+                                    <span class="toggle-icon">👁️</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="confirmPassword" class="input-label">
+                                <span class="label-text">确认密码</span>
+                            </label>
+                            <div class="input-wrap">
+                                <span class="input-icon" aria-hidden="true">🔐</span>
+                                <input 
+                                    type="password" 
+                                    id="confirmPassword" 
+                                    name="confirmPassword" 
+                                    placeholder="请再次输入密码"
+                                    required
+                                    autocomplete="new-password"
+                                    class="input-field"
+                                >
+                                <button type="button" class="toggle-btn" data-target="confirmPassword" aria-label="显示密码">
+                                    <span class="toggle-icon">👁️</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-large">
+                            <span class="btn-icon" aria-hidden="true">✨</span>
+                            创建账号
+                        </button>
+                    </fieldset>
+                </form>
+            </section>
+
+            <!-- 主控制台视图 -->
+            <section id="dashboardView" class="view dashboard-view is-hidden" aria-label="主控制台">
+                <!-- 顶部导航栏 -->
+                <header class="dashboard-header">
+                    <div class="user-info">
+                        <div class="avatar" aria-hidden="true">
+                            <span id="userAvatar">👤</span>
+                        </div>
+                        <div class="user-meta">
+                            <h2 id="welcomeTitle">你好</h2>
+                            <p id="welcomeMeta" class="user-subtitle"></p>
+                        </div>
+                    </div>
+                    <button type="button" id="logoutBtn" class="btn btn-ghost btn-icon" aria-label="退出登录">
+                        <span aria-hidden="true">🚪</span>
+                    </button>
+                </header>
+
+                <!-- 导航页面 -->
+                <section id="navPage" class="page-section" aria-label="导航">
+                    <!-- 快速操作卡片 -->
+                    <div class="quick-actions">
+                        <button type="button" id="emergencyBtn" class="action-card action-emergency">
+                            <span class="action-icon" aria-hidden="true">🆘</span>
+                            <span class="action-text">紧急呼叫</span>
+                            <span class="action-sub" id="emergencySubLabel">一键求助</span>
+                        </button>
+                        <a href="indoor.html" class="action-card action-indoor">
+                            <span class="action-icon" aria-hidden="true">🏫</span>
+                            <span class="action-text">室内导航</span>
+                            <span class="action-sub">教学楼路线</span>
+                        </a>
+                    </div>
+
+                    <!-- 路线规划表单 -->
+                    <div class="card route-card">
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <span aria-hidden="true">🧭</span>
+                                路线规划
+                            </h3>
+                            <p class="card-subtitle">输入起点和终点开始导航</p>
+                        </div>
+                        
+                        <form id="routeForm" class="route-form">
+                            <div class="location-inputs">
+                                <div class="input-group location-group">
+                                    <label for="startPoint" class="sr-only">起点</label>
+                                    <div class="location-wrap">
+                                        <span class="location-dot start-dot" aria-hidden="true"></span>
+                                        <input 
+                                            type="text" 
+                                            id="startPoint" 
+                                            placeholder="请输入起点位置"
+                                            required
+                                            class="input-field location-field"
+                                            aria-label="起点位置"
+                                        >
+                                        <button type="button" id="locateBtn" class="btn btn-ghost btn-small locate-btn" aria-label="定位当前位置">
+                                            <span aria-hidden="true">📍</span>
+                                            定位
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="location-divider" aria-hidden="true">
+                                    <span class="divider-line"></span>
+                                    <span class="divider-icon">⬇️</span>
+                                    <span class="divider-line"></span>
+                                </div>
+
+                                <div class="input-group location-group">
+                                    <label for="endPoint" class="sr-only">终点</label>
+                                    <div class="location-wrap">
+                                        <span class="location-dot end-dot" aria-hidden="true"></span>
+                                        <input 
+                                            type="text" 
+                                            id="endPoint" 
+                                            placeholder="请输入终点位置"
+                                            required
+                                            class="input-field location-field"
+                                            aria-label="终点位置"
+                                        >
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary btn-large btn-full">
+                                <span class="btn-icon" aria-hidden="true">🚀</span>
+                                开始导航
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- 地图区域 -->
+                    <div class="card map-card">
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <span aria-hidden="true">🗺️</span>
+                                路线地图
+                            </h3>
+                            <span id="mapStatus" class="status-badge">准备就绪</span>
+                        </div>
+                        <div id="mapContainer" class="map-container" role="img" aria-label="导航地图">
+                            <div class="map-placeholder">
+                                <span class="placeholder-icon">🗺️</span>
+                                <p>地图加载中...</p>
+                                <p class="placeholder-hint">请确保已配置高德地图 API Key</p>
+                            </div>
+                        </div>
+                        <div id="routePanel" class="route-details"></div>
+                    </div>
+
+                    <!-- 导航状态 -->
+                    <div class="card status-card">
+                        <div class="status-header">
+                            <span class="status-icon" aria-hidden="true">📍</span>
+                            <div class="status-info">
+                                <span class="status-label">导航状态</span>
+                                <strong id="routeStatus" class="status-value">暂未开始</strong>
+                            </div>
+                        </div>
+                        <p id="routeMeta" class="status-desc">填写起点与终点后，点击"开始导航"</p>
+                    </div>
+                </section>
+
+                <!-- 个人中心页面 -->
+                <section id="profilePage" class="page-section is-hidden" aria-label="个人中心">
+                    <div class="card profile-card">
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <span aria-hidden="true">👤</span>
+                                个人信息
+                            </h3>
+                        </div>
+                        
+                        <form id="profileForm" class="profile-form">
+                            <div class="profile-avatar-section">
+                                <div class="profile-avatar">
+                                    <span id="profileAvatarEmoji">👤</span>
+                                </div>
+                                <p class="avatar-hint">点击更换头像</p>
+                            </div>
+
+                            <div class="input-group">
+                                <label for="profileDisplayName" class="input-label">昵称</label>
+                                <input type="text" id="profileDisplayName" name="displayName" required class="input-field">
+                            </div>
+
+                            <div class="input-group">
+                                <label for="profileUsername" class="input-label">用户名</label>
+                                <input type="text" id="profileUsername" disabled class="input-field input-disabled">
+                            </div>
+
+                            <div class="input-group">
+                                <label for="profileCreatedAt" class="input-label">注册时间</label>
+                                <input type="text" id="profileCreatedAt" disabled class="input-field input-disabled">
+                            </div>
+
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <span class="info-label">登录状态</span>
+                                    <strong id="sessionStatus" class="info-value">已登录</strong>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">当前时间</span>
+                                    <strong id="clockValue" class="info-value">--:--</strong>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary btn-large btn-full">
+                                <span class="btn-icon" aria-hidden="true">💾</span>
+                                保存修改
+                            </button>
+                        </form>
+                    </div>
+                </section>
+
+                <!-- 底部导航 -->
+                <nav class="bottom-nav" aria-label="主导航">
+                    <button type="button" class="nav-item is-active" data-view="nav" aria-current="page">
+                        <span class="nav-icon" aria-hidden="true">🧭</span>
+                        <span class="nav-label">导航</span>
+                    </button>
+                    <button type="button" class="nav-item" data-view="profile">
+                        <span class="nav-icon" aria-hidden="true">👤</span>
+                        <span class="nav-label">我的</span>
+                    </button>
+                </nav>
+            </section>
+        </main>
+    </div>
+
+    <!-- 紧急呼叫确认弹窗 -->
+    <div id="emergencyModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="emergencyTitle" hidden>
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="emergencyTitle" class="modal-title">🆘 紧急呼叫确认</h3>
+                <button type="button" class="modal-close" aria-label="关闭">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-text" id="emergencyModalText">确定要拨打紧急联系电话吗？</p>
+                <p class="modal-hint">系统将同时上报您的当前位置信息</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost modal-cancel">取消</button>
+                <a id="emergencyCallLink" href="tel:110" class="btn btn-danger modal-confirm">立即拨打</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="amap-config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
