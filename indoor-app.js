@@ -278,7 +278,7 @@ const state = {
     pathSegments: [],       // [{floor, path:[...]}]
     currentStep: 0,
     pathSteps: [],
-    voiceEnabled: false,
+    voiceEnabled: true,  // 默认开启语音
     animOffset: 0,
     animFrame: null,
 };
