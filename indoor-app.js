@@ -1189,10 +1189,20 @@ function init() {
     // 同步语音按钮初始状态
     updateVoiceButton();
     
-    // 如果语音默认开启，监听首次用户交互来初始化音频上下文
+    // 如果语音默认开启，监听首次用户交互来初始化音频并播报
     if (state.voiceEnabled) {
+        let hasAnnounced = false;
         const initAudioOnInteraction = () => {
+            if (hasAnnounced) return;
+            hasAnnounced = true;
+            
             initAudio();
+            // 延迟一点播放，确保音频上下文已恢复
+            setTimeout(() => {
+                speak("语音导航已开启");
+                playSuccessSound();
+            }, 100);
+            
             document.removeEventListener("click", initAudioOnInteraction);
             document.removeEventListener("touchstart", initAudioOnInteraction);
         };
