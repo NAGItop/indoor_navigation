@@ -21,8 +21,8 @@ const CONFIG = {
     mapTimeout: 10000,
     geolocationTimeout: 10000,
     // ✏️ 紧急联系电话 —— 修改这里即可更换号码
-    emergencyPhone: "110",
-    emergencyPhoneLabel: "110 报警电话"
+    emergencyPhone: "13379989076",
+    emergencyPhoneLabel: "联系人"
 };
 
 // ============================================
