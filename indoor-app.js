@@ -1117,168 +1117,170 @@ function playVoiceOnSound() {
 }
 
 // ============================================
-// 语音识别模块（百度短语音识别 REST API）
+// 语音识别模块 — 持续音量监听 + 百度 ASR
 // ============================================
-let voiceRecognition = null;       // 当前录音状态
-let voiceRecording = false;        // 是否正在录音
-let voiceTarget = null;            // 'start' 或 'end'，标识当前是录入起点还是终点
+let voiceListening = false;        // 持续监听是否已启动
+let voiceRecording = false;        // 是否正在录音（MediaRecorder）
 let mediaRecorder = null;          // MediaRecorder 实例
 let audioChunks = [];              // 录音数据块
+let monitorStream = null;          // 持续监听的麦克风流
+let monitorAnalyser = null;        // AnalyserNode（音量检测）
+let silenceTimer = null;           // 静音超时定时器
+let recordTimer = null;            // 最大录音时长定时器
+let cooldownActive = false;        // 冷却中（防止连续触发）
+let voiceInitialized = false;      // 语音模块是否已初始化
 
-// 百度语音识别 API 配置（复用 TTS 的 access token）
-const BAIDU_ASR_FORMAT = 'wav';    // 录音格式
-const BAIDU_ASR_SAMPLE_RATE = 16000; // 采样率（百度要求16000）
+// 百度语音识别 API 配置
+const BAIDU_ASR_SAMPLE_RATE = 16000;
 const BAIDU_ASR_CUID = '7664376';
 
-// 检查是否支持录音（getUserMedia）
+// 监听参数
+const VOICE_THRESHOLD = 15;        // 音量阈值（0-100），环境安静时 10-20 足够
+const SILENCE_DURATION = 1500;     // 静音多久后停止录音（ms）
+const MAX_RECORD_DURATION = 8000;  // 最大单次录音时长（ms）
+const COOLDOWN_DURATION = 2000;    // 两次识别之间的最小间隔（ms）
+const MIN_RECORD_DURATION = 500;   // 最短录音时长（ms），过滤掉短噪音
+
+// 检查是否支持
 function isSpeechRecognitionSupported() {
     return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 }
 
-// 从识别文字中匹配房间
-// 支持说"去卫生间"、"导航到103教室"、"去三楼实验室"、"101"等
-function matchRoomByText(text) {
-    // 去掉空格和常见前缀
-    let cleaned = text.replace(/\s+/g, '')
-        .replace(/去|到|导航到|我要去|前往|带我去|想(要|去)|走(到)?/g, '')
-        .trim();
-    
-    if (!cleaned) return null;
-    
-    // 先尝试精确匹配 id（如 "101"、"201"）
-    let match = ALL_ROOMS.find(r => r.id === cleaned || r.id.endsWith(cleaned));
-    if (match) return match;
-    
-    // 尝试匹配名称中的数字+关键词（如 "103教室"、"一楼卫生间"、"三楼实验室"）
-    match = ALL_ROOMS.find(r => {
-        const nameClean = r.name.replace(/[📚🔬💻🏢🚻🚪🪜\s]/g, '');
-        return cleaned.includes(nameClean) || nameClean.includes(cleaned);
-    });
-    if (match) return match;
-    
-    // 模糊匹配：提取数字，查找对应房间
-    const numMatch = cleaned.match(/\d{3}/);
-    if (numMatch) {
-        match = ALL_ROOMS.find(r => r.id.includes(numMatch[0]));
-        if (match) return match;
-    }
-    
-    // 关键词匹配
-    const keywordMap = {
-        '卫生间': ['卫生间'],
-        '厕所': ['卫生间'],
-        '洗手间': ['卫生间'],
-        '办公室': ['办公室'],
-        '实验室': ['实验室'],
-        '机房': ['计算机室'],
-        '电脑室': ['计算机室'],
-        '计算机': ['计算机室'],
-        '大门': ['大门'],
-        '门口': ['大门'],
-        '入口': ['大门'],
-    };
-    
-    for (const [keyword, roomKeywords] of Object.entries(keywordMap)) {
-        if (cleaned.includes(keyword)) {
-            // 如果带了楼层信息，优先匹配指定楼层
-            const floorMatch = cleaned.match(/([一二三四五六七八九十1234567890]+)楼/);
-            if (floorMatch) {
-                let floorNum;
-                const fStr = floorMatch[1];
-                const floorWords = {'一':1,'二':2,'三':3,'四':4,'五':5};
-                floorNum = floorWords[fStr] || parseInt(fStr);
-                if (floorNum) {
-                    match = ALL_ROOMS.find(r =>
-                        r.floor === floorNum &&
-                        roomKeywords.some(k => r.name.replace(/[📚🔬💻🏢🚻🚪🪜\s]/g, '').includes(k))
-                    );
-                    if (match) return match;
-                }
+// ── 初始化持续语音监听（页面首次交互时调用）──
+async function initVoiceListener() {
+    if (voiceInitialized || !isSpeechRecognitionSupported()) return;
+    voiceInitialized = true;
+
+    try {
+        monitorStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                sampleRate: BAIDU_ASR_SAMPLE_RATE,
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
             }
-            // 没有楼层信息，返回当前楼层的匹配房间
-            match = ALL_ROOMS.find(r =>
-                r.floor === state.viewFloor &&
-                roomKeywords.some(k => r.name.replace(/[📚🔬💻🏢🚻🚪🪜\s]/g, '').includes(k))
-            );
-            if (match) return match;
+        });
+
+        const ctx = initAudio();
+        const source = ctx.createMediaStreamSource(monitorStream);
+        monitorAnalyser = ctx.createAnalyser();
+        monitorAnalyser.fftSize = 512;
+        monitorAnalyser.smoothingTimeConstant = 0.5;
+        source.connect(monitorAnalyser);
+
+        voiceListening = true;
+        console.log('[语音监听] 已启动持续麦克风监听');
+        updateVoiceStatus('listening');
+        monitorAudioLevel();
+    } catch (e) {
+        console.log('[语音监听] 初始化失败:', e);
+        if (e.name === 'NotAllowedError') {
+            showResult('请允许麦克风权限以使用语音控制', 'error');
+        } else if (e.name === 'NotFoundError') {
+            showResult('未检测到麦克风设备', 'error');
         }
+        voiceInitialized = false;
     }
-    
-    return null;
 }
 
-// 开始语音识别（百度 API 版）
-async function startVoiceInput(target) {
+// ── 持续检测音量 ──
+function monitorAudioLevel() {
+    if (!voiceListening || !monitorAnalyser) return;
+
+    const bufferLength = monitorAnalyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    monitorAnalyser.getByteFrequencyData(dataArray);
+
+    // 计算平均音量
+    let sum = 0;
+    for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i];
+    }
+    const avgVolume = sum / bufferLength;
+
+    // 如果正在录音，检测静音
     if (voiceRecording) {
-        stopVoiceInput();
-        return;
+        if (avgVolume < VOICE_THRESHOLD) {
+            if (!silenceTimer) {
+                silenceTimer = setTimeout(() => {
+                    // 静音超时，停止录音
+                    console.log('[语音监听] 检测到静音，停止录音');
+                    stopRecording();
+                }, SILENCE_DURATION);
+            }
+        } else {
+            // 还有声音，重置静音计时器
+            if (silenceTimer) {
+                clearTimeout(silenceTimer);
+                silenceTimer = null;
+            }
+        }
+    } else if (!cooldownActive && avgVolume > VOICE_THRESHOLD) {
+        // 没在录音也没在冷却 → 检测到声音，开始录音
+        console.log('[语音监听] 检测到声音，开始录音');
+        startRecording();
     }
 
-    if (!isSpeechRecognitionSupported()) {
-        showResult('您的浏览器不支持录音功能，请使用 Chrome 浏览器', 'error');
-        return;
-    }
+    requestAnimationFrame(monitorAudioLevel);
+}
 
-    voiceTarget = target; // 'start' 或 'end'
+// ── 开始录音（用独立流，不干扰监听）──
+async function startRecording() {
+    if (voiceRecording || cooldownActive) return;
     voiceRecording = true;
     audioChunks = [];
 
-    // 更新按钮状态
-    const btnId = target === 'start' ? 'voiceStartBtn' : 'voiceEndBtn';
-    const btn = document.getElementById(btnId);
-    if (btn) {
-        btn.classList.add('recording');
-        btn.querySelector('.voice-icon').textContent = '⏹️';
-        btn.setAttribute('aria-label', '正在录音，点击停止');
-    }
+    updateVoiceStatus('recording');
+    playBeep();
 
-    playBeep(); // 播放开始录音提示音
+    const recordStartTime = Date.now();
 
     try {
-        // 获取麦克风权限并开始录音
+        // 获取新的麦克风流用于录音
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
                 sampleRate: BAIDU_ASR_SAMPLE_RATE,
                 echoCancellation: true,
                 noiseSuppression: true,
+                autoGainControl: true,
             }
         });
 
-        // 选择支持的 MIME 类型（优先 PCM/WAV）
         let mimeType = 'audio/webm;codecs=pcm';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = 'audio/webm';
-        }
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = 'audio/mp4';
-        }
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = ''; // 让浏览器自行选择
-        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/webm';
+        if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/mp4';
+        if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
 
         mediaRecorder = mimeType
             ? new MediaRecorder(stream, { mimeType })
             : new MediaRecorder(stream);
 
         mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
-                audioChunks.push(e.data);
-            }
+            if (e.data.size > 0) audioChunks.push(e.data);
         };
 
         mediaRecorder.onstop = async () => {
-            // 停止所有音频轨道
             stream.getTracks().forEach(track => track.stop());
 
-            if (audioChunks.length === 0) {
-                showResult('未录制到音频，请再试一次', 'error');
-                resetVoiceBtn();
+            const recordDuration = Date.now() - recordStartTime;
+
+            // 太短了，丢弃（可能是噪音）
+            if (recordDuration < MIN_RECORD_DURATION) {
+                console.log('[语音监听] 录音太短（' + recordDuration + 'ms），丢弃');
+                voiceRecording = false;
+                updateVoiceStatus('listening');
                 return;
             }
 
-            const label = target === 'start' ? '起点' : '终点';
-            showResult(`正在识别${label}语音，请稍候...`, 'info');
+            if (audioChunks.length === 0) {
+                voiceRecording = false;
+                updateVoiceStatus('listening');
+                return;
+            }
+
+            updateVoiceStatus('processing');
 
             try {
                 const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
@@ -1286,57 +1288,185 @@ async function startVoiceInput(target) {
                 console.log('[语音识别] 结果:', recognizedText);
 
                 if (recognizedText) {
-                    const matchedRoom = matchRoomByText(recognizedText);
-
-                    if (matchedRoom) {
-                        // 匹配成功，设置下拉框
-                        const selectId = target === 'start' ? 'startSelect' : 'endSelect';
-                        const select = document.getElementById(selectId);
-                        if (select) {
-                            select.value = matchedRoom.id;
-                        }
-                        showResult(`已设置${label}：${matchedRoom.name}`, 'success');
-                        playSuccessSound();
-                        hapticFeedback('success');
-                    } else {
-                        showResult(`识别到"${recognizedText}"，但未匹配到有效位置。请再说一次（如"去卫生间"、"103教室"）`, 'error');
-                        playTone(200, 0.3);
-                        hapticFeedback('error');
-                    }
-                } else {
-                    showResult('语音识别未返回结果，请再试一次', 'error');
-                    playTone(200, 0.3);
-                    hapticFeedback('error');
+                    await processVoiceCommand(recognizedText);
                 }
             } catch (e) {
-                console.log('[语音识别] 处理失败:', e);
-                showResult('语音识别失败：' + (e.message || '未知错误'), 'error');
-                playTone(200, 0.3);
-                hapticFeedback('error');
+                console.log('[语音识别] 处理失败:', e.message);
+                // 不频繁报错，只 console
             }
 
-            resetVoiceBtn();
+            // 冷却期
+            voiceRecording = false;
+            cooldownActive = true;
+            updateVoiceStatus('listening');
+
+            setTimeout(() => {
+                cooldownActive = false;
+            }, COOLDOWN_DURATION);
         };
 
         mediaRecorder.onerror = (e) => {
-            console.log('[语音识别] MediaRecorder 错误:', e.error);
+            console.log('[语音监听] MediaRecorder 错误:', e.error);
             stream.getTracks().forEach(track => track.stop());
-            showResult('录音出错：' + (e.error?.message || '未知错误'), 'error');
-            resetVoiceBtn();
+            voiceRecording = false;
+            updateVoiceStatus('listening');
         };
 
-        // 每200ms收集一次数据，确保短语音也能采集到
+        // 最大录音时长限制
+        recordTimer = setTimeout(() => {
+            console.log('[语音监听] 达到最大录音时长，停止');
+            stopRecording();
+        }, MAX_RECORD_DURATION);
+
         mediaRecorder.start(200);
     } catch (e) {
-        console.log('[语音识别] 启动失败:', e);
-        if (e.name === 'NotAllowedError') {
-            showResult('请允许麦克风权限后重试', 'error');
-        } else if (e.name === 'NotFoundError') {
-            showResult('未检测到麦克风设备', 'error');
-        } else {
-            showResult('录音启动失败：' + (e.message || '未知错误'), 'error');
+        console.log('[语音监听] 开始录音失败:', e);
+        voiceRecording = false;
+        updateVoiceStatus('listening');
+    }
+}
+
+// ── 停止录音 ──
+function stopRecording() {
+    if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+    }
+    if (recordTimer) {
+        clearTimeout(recordTimer);
+        recordTimer = null;
+    }
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try { mediaRecorder.stop(); } catch(e) {}
+    }
+    mediaRecorder = null;
+}
+
+// ── 更新语音状态指示 ──
+function updateVoiceStatus(status) {
+    const panel = document.getElementById('voicePanel');
+    const waveEl = panel?.querySelector('.voice-wave');
+    const textEl = panel?.querySelector('.voice-text');
+
+    if (panel) {
+        panel.classList.remove('status-listening', 'status-recording', 'status-processing');
+        panel.classList.add('status-' + status);
+    }
+
+    if (textEl) {
+        const messages = {
+            'idle': '语音功能未启动',
+            'listening': '语音监听中，直接说话即可',
+            'recording': '正在聆听...',
+            'processing': '正在识别语音...',
+        };
+        textEl.textContent = messages[status] || messages.listening;
+    }
+}
+
+// ── 解析语音指令并执行 ──
+async function processVoiceCommand(text) {
+    console.log('[语音指令] 原始文本:', text);
+
+    // 判断是设置位置还是控制指令
+    const startKeywords = ['从', '起点', '出发', '从这里'];
+    const endKeywords = ['去', '到', '导航', '终点', '前往', '目标'];
+    const controlKeywords = ['开始', '规划', '下一步', '上一步', '清除', '重新', '看', '切', '切换'];
+
+    const hasStart = startKeywords.some(k => text.includes(k));
+    const hasEnd = endKeywords.some(k => text.includes(k));
+    const hasControl = controlKeywords.some(k => text.includes(k));
+
+    // 控制指令检测
+    if (text.includes('开始') || text.includes('规划')) {
+        const planBtn = document.getElementById('planBtn');
+        if (planBtn) {
+            planBtn.click();
+            speak('已开始规划路线');
+            return;
         }
-        resetVoiceBtn();
+    }
+    if (text.includes('下一步')) {
+        const nextBtn = document.getElementById('nextStep');
+        if (nextBtn && !nextBtn.disabled) {
+            nextBtn.click();
+            return;
+        }
+    }
+    if (text.includes('上一步')) {
+        const prevBtn = document.getElementById('prevStep');
+        if (prevBtn && !prevBtn.disabled) {
+            prevBtn.click();
+            return;
+        }
+    }
+    if (text.includes('清除') || text.includes('重新')) {
+        const clearBtn = document.getElementById('clearBtn');
+        if (clearBtn) {
+            clearBtn.click();
+            speak('已清除路线');
+            return;
+        }
+    }
+    // 楼层切换
+    const floorMatch = text.match(/([一二三123])\s*楼/);
+    if (floorMatch) {
+        const floorWords = { '一': 1, '二': 2, '三': 3, '1': 1, '2': 2, '3': 3 };
+        const floor = floorWords[floorMatch[1]];
+        if (floor) {
+            switchToFloor(floor);
+            speak('已切换到' + floor + '楼');
+            return;
+        }
+    }
+
+    // 位置匹配
+    const matchedRoom = matchRoomByText(text);
+    if (matchedRoom) {
+        // 智能判断设置起点还是终点
+        let selectId;
+        if (hasStart) {
+            selectId = 'startSelect';
+        } else if (hasEnd) {
+            selectId = 'endSelect';
+        } else {
+            // 没有明确关键词：如果起点已设，自动设终点；否则设起点
+            const startSelect = document.getElementById('startSelect');
+            const endSelect = document.getElementById('endSelect');
+            const startSet = startSelect && startSelect.value;
+            const endSet = endSelect && endSelect.value;
+
+            if (!startSet) {
+                selectId = 'startSelect';
+            } else if (!endSet) {
+                selectId = 'endSelect';
+            } else {
+                // 两个都设了，替换终点
+                selectId = 'endSelect';
+            }
+        }
+
+        const select = document.getElementById(selectId);
+        if (select) select.value = matchedRoom.id;
+
+        const label = selectId === 'startSelect' ? '起点' : '终点';
+        showResult(`已设置${label}：${matchedRoom.name}`, 'success');
+        speak(`已设置${label}：${matchedRoom.name}`);
+        playSuccessSound();
+        hapticFeedback('success');
+
+        // 如果起点和终点都设了，自动规划
+        const startSel = document.getElementById('startSelect');
+        const endSel = document.getElementById('endSelect');
+        if (startSel?.value && endSel?.value) {
+            setTimeout(() => {
+                const planBtn = document.getElementById('planBtn');
+                if (planBtn) planBtn.click();
+            }, 1500);
+        }
+    } else if (!hasControl) {
+        // 没有匹配到有效指令
+        console.log('[语音指令] 未匹配到有效指令:', text);
     }
 }
 
@@ -1452,35 +1582,22 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
-// 停止语音识别
-function stopVoiceInput() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        try { mediaRecorder.stop(); } catch(e) {}
+// 停止语音监听（页面卸载时调用）
+function stopVoiceListener() {
+    voiceListening = false;
+    stopRecording();
+    if (monitorStream) {
+        monitorStream.getTracks().forEach(track => track.stop());
+        monitorStream = null;
     }
-    mediaRecorder = null;
-    // resetVoiceBtn 在 onstop 回调中执行
+    monitorAnalyser = null;
+    voiceInitialized = false;
 }
 
-// 重置语音按钮状态
-function resetVoiceBtn() {
-    voiceRecording = false;
-    ['voiceStartBtn', 'voiceEndBtn'].forEach(id => {
-        const btn = document.getElementById(id);
-        if (btn) {
-            btn.classList.remove('recording');
-            btn.querySelector('.voice-icon').textContent = '🎤';
-            btn.setAttribute('aria-label', id.includes('Start') ? '语音输入起点' : '语音输入终点');
-        }
-    });
-}
-
-// 绑定语音按钮事件
+// 绑定语音事件（持续监听模式，首次交互时初始化）
 function bindVoiceEvents() {
-    const startBtn = document.getElementById('voiceStartBtn');
-    const endBtn = document.getElementById('voiceEndBtn');
-
-    if (startBtn) startBtn.addEventListener('click', () => startVoiceInput('start'));
-    if (endBtn) endBtn.addEventListener('click', () => startVoiceInput('end'));
+    // 持续监听模式不需要按钮
+    // initVoiceListener() 在 init() 里的 initAudioOnInteraction 中调用
 }
 
 // 百度语音合成配置
@@ -1494,37 +1611,56 @@ const BAIDU_TTS_CONFIG = {
 let baiduAccessToken = null;
 let tokenExpireTime = 0;
 
-// 获取百度 access token
+// 获取百度 access token（通过 CORS 代理解决跨域问题）
 async function getBaiduAccessToken() {
     // 如果 token 还有效，直接返回
     if (baiduAccessToken && Date.now() < tokenExpireTime) {
         return baiduAccessToken;
     }
     
+    // 尝试多个 CORS 代理
+    const proxyUrls = [
+        'https://corsproxy.io/?',
+        'https://api.allorigins.win/raw?url=',
+    ];
+    
+    const tokenUrl = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id='
+        + BAIDU_TTS_CONFIG.apiKey + '&client_secret=' + BAIDU_TTS_CONFIG.secretKey;
+    
+    // 方案1：直接请求（同源部署时可用）
     try {
-        const response = await fetch('https://aip.baidubce.com/oauth/2.0/token', {
+        const response = await fetch(tokenUrl, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify({
-                grant_type: 'client_credentials',
-                client_id: BAIDU_TTS_CONFIG.apiKey,
-                client_secret: BAIDU_TTS_CONFIG.secretKey
-            })
+            headers: { 'Content-Type': 'application/json' }
         });
-        
         const data = await response.json();
         if (data.access_token) {
             baiduAccessToken = data.access_token;
-            // token 有效期 30 天，这里设置为 29 天后过期
             tokenExpireTime = Date.now() + (29 * 24 * 60 * 60 * 1000);
+            console.log('[Token] 直接获取成功');
             return baiduAccessToken;
         }
     } catch (e) {
-        console.log('获取百度 token 失败:', e);
+        console.log('[Token] 直接获取失败，尝试 CORS 代理...');
     }
+    
+    // 方案2：通过 CORS 代理
+    for (const proxy of proxyUrls) {
+        try {
+            const response = await fetch(proxy + encodeURIComponent(tokenUrl));
+            const data = await response.json();
+            if (data.access_token) {
+                baiduAccessToken = data.access_token;
+                tokenExpireTime = Date.now() + (29 * 24 * 60 * 60 * 1000);
+                console.log('[Token] 通过代理获取成功');
+                return baiduAccessToken;
+            }
+        } catch (e) {
+            console.log('[Token] 代理', proxy, '失败，尝试下一个...');
+        }
+    }
+    
+    console.log('[Token] 所有方式均失败');
     return null;
 }
 
@@ -1702,7 +1838,7 @@ function updateVoiceButton() {
         btn.setAttribute("aria-label", "语音导航已开启");
         icon.textContent = "🔊";
         if (voiceText) {
-            voiceText.textContent = "语音已开启，点击\"开始规划路线\"激活提示音";
+            voiceText.textContent = "语音已开启，点击页面任意位置激活语音功能";
         }
     } else {
         btn.classList.remove("active");
@@ -1723,17 +1859,17 @@ function init() {
     initSelectors();
     initFloorButtons();
     bindEvents();
-    bindVoiceEvents();  // 绑定语音识别按钮事件
+    bindVoiceEvents();
     
     // 同步语音按钮初始状态
     updateVoiceButton();
     
-    // 如果语音默认开启，监听首次用户交互来初始化音频并播报
+    // 首次用户交互时：初始化音频上下文 + 启动语音持续监听
     if (state.voiceEnabled) {
-        let hasAnnounced = false;
-        const initAudioOnInteraction = async () => {
-            if (hasAnnounced) return;
-            hasAnnounced = true;
+        let hasInitialized = false;
+        const onFirstInteraction = async () => {
+            if (hasInitialized) return;
+            hasInitialized = true;
             
             // 必须在用户手势的同步调用栈里立即初始化音频上下文
             const ctx = initAudio();
@@ -1741,19 +1877,25 @@ function init() {
                 ctx.resume();
             }
             
-            document.removeEventListener("click", initAudioOnInteraction);
-            document.removeEventListener("touchstart", initAudioOnInteraction);
+            document.removeEventListener("click", onFirstInteraction);
+            document.removeEventListener("touchstart", onFirstInteraction);
             
-            // 预获取百度 token，再播报（token 获取完才能播，但已在手势链中解锁过 ctx）
+            // 预获取百度 token
             await getBaiduAccessToken();
-            speak("语音导航已开启");
+            speak("语音导航已开启，直接说话即可控制");
+            
+            // 启动持续语音监听
+            await initVoiceListener();
         };
-        document.addEventListener("click", initAudioOnInteraction);
-        document.addEventListener("touchstart", initAudioOnInteraction);
+        document.addEventListener("click", onFirstInteraction);
+        document.addEventListener("touchstart", onFirstInteraction);
     }
     
-    console.log("🏫 室内导航系统 v3.0（多楼层）已启动");
-    console.log(`楼层数：3，每层地图：${ROWS}×${COLS}，楼梯节点：${Object.keys(STAIR_NODES).length}处`);
+    // 页面卸载时清理资源
+    window.addEventListener('beforeunload', stopVoiceListener);
+    
+    console.log("室内导航系统 v3.0（多楼层）已启动");
+    console.log(`楼层数：3，每层地图：${ROWS}x${COLS}，楼梯节点：${Object.keys(STAIR_NODES).length}处`);
 }
 
 document.readyState === "loading"

@@ -140,7 +140,7 @@
                 <div id="voicePanel" class="voice-panel" aria-live="polite" aria-atomic="true">
                     <div class="voice-status">
                         <span class="voice-wave" aria-hidden="true"></span>
-                        <span class="voice-text">语音已开启，点击页面任意位置激活语音播报</span>
+                        <span class="voice-text">语音已开启，点击页面任意位置激活语音功能</span>
                     </div>
                 </div>
             </div>
@@ -168,9 +168,6 @@
                                 <option value="" disabled selected>🚩 选择起点</option>
                             </select>
                         </div>
-                        <button type="button" id="voiceStartBtn" class="voice-input-btn" aria-label="语音输入起点">
-                            <span class="voice-icon">🎤</span>
-                        </button>
                     </div>
 
                     <div class="location-divider" aria-hidden="true">
@@ -187,9 +184,6 @@
                                 <option value="" disabled selected>🎯 选择终点</option>
                             </select>
                         </div>
-                        <button type="button" id="voiceEndBtn" class="voice-input-btn" aria-label="语音输入终点">
-                            <span class="voice-icon">🎤</span>
-                        </button>
                     </div>
                 </div>
 
@@ -268,6 +262,22 @@
                         <li>楼梯间均配备双侧扶手及语音播报装置</li>
                         <li>每层卫生间均为无障碍设计</li>
                         <li>路线中如有换层，导航会明确提示"上楼至X层"</li>
+                    </ul>
+                </div>
+
+                <!-- 语音控制提示 -->
+                <div class="accessibility-tips" style="margin-top:0.75rem; border-color: rgba(59, 130, 246, 0.3); background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(59, 130, 246, 0.05));">
+                    <h3 class="tips-title" style="color: var(--color-primary-light);">
+                        <span aria-hidden="true">🎙️</span>
+                        语音控制
+                    </h3>
+                    <ul class="tips-list">
+                        <li>点击页面任意位置激活语音后，直接说话即可控制</li>
+                        <li>说"去卫生间"、"103教室"等可设置位置</li>
+                        <li>说"开始导航"可自动规划路线</li>
+                        <li>说"下一步"、"上一步"可步进导航</li>
+                        <li>说"二楼"、"三楼"可切换楼层</li>
+                        <li>说"清除"可重置路线</li>
                     </ul>
                 </div>
 
