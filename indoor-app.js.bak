@@ -1172,7 +1172,7 @@ async function speakWithBaidu(text) {
     try {
         // 构建语音合成 URL
         const params = new URLSearchParams({
-            tex: encodeURIComponent(text),
+            tex: text,
             tok: token,
             cuid: BAIDU_TTS_CONFIG.appId,
             ctp: '1',
@@ -1186,28 +1186,17 @@ async function speakWithBaidu(text) {
         
         const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
         
+        // 创建音频元素播放
+        const audio = new Audio();
+        audio.src = ttsUrl;
+        
         // 确保音频上下文已恢复（移动端需要）
         const ctx = initAudio();
         if (ctx && ctx.state === 'suspended') {
             await ctx.resume();
         }
         
-        // 用 Promise 包装音频加载+播放，兼容微信/Edge 的严格策略
-        await new Promise((resolve, reject) => {
-            const audio = new Audio();
-            audio.preload = 'auto';
-            // 加载完毕后播放
-            audio.addEventListener('canplaythrough', () => {
-                audio.play()
-                    .then(resolve)
-                    .catch(reject);
-            }, { once: true });
-            audio.addEventListener('error', (e) => {
-                reject(new Error('audio load error: ' + (e.message || audio.error?.code)));
-            }, { once: true });
-            audio.src = ttsUrl;
-            audio.load();
-        });
+        await audio.play();
         return true;
     } catch (e) {
         console.log('百度语音合成播放失败:', e);
@@ -1217,7 +1206,6 @@ async function speakWithBaidu(text) {
 
 // 语音播报
 async function speak(text) {
-    // 始终更新界面文字（无论能否播音，视障用户的辅助技术也能读到）
     const el = document.querySelector(".voice-text");
     if (el) el.textContent = text;
     
@@ -1225,11 +1213,9 @@ async function speak(text) {
     
     // 先尝试百度语音合成
     const baiduSuccess = await speakWithBaidu(text);
-    if (baiduSuccess) return;
     
-    // 百度失败 → 尝试浏览器自带语音合成
-    // 微信 WebView 里 speechSynthesis 基本不可用，检查后再调用
-    if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
+    // 如果百度失败，回退到浏览器自带语音合成
+    if (!baiduSuccess && window.speechSynthesis) {
         try {
             window.speechSynthesis.cancel();
             const utt = new SpeechSynthesisUtterance(text);
@@ -1338,18 +1324,16 @@ function init() {
             if (hasAnnounced) return;
             hasAnnounced = true;
             
-            // 必须在用户手势的同步调用栈里立即初始化音频上下文
-            const ctx = initAudio();
-            if (ctx && ctx.state === 'suspended') {
-                ctx.resume();
-            }
+            initAudio();
+            // 预获取百度 token，为后续播报做准备
+            await getBaiduAccessToken();
+            // 延迟一点播放，确保音频上下文已恢复
+            setTimeout(() => {
+                speak("语音导航已开启");
+            }, 200);
             
             document.removeEventListener("click", initAudioOnInteraction);
             document.removeEventListener("touchstart", initAudioOnInteraction);
-            
-            // 预获取百度 token，再播报（token 获取完才能播，但已在手势链中解锁过 ctx）
-            await getBaiduAccessToken();
-            speak("语音导航已开启");
         };
         document.addEventListener("click", initAudioOnInteraction);
         document.addEventListener("touchstart", initAudioOnInteraction);

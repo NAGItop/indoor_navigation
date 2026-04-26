@@ -4,114 +4,6 @@
  */
 
 // ============================================
-// 百度语音合成（外层页面）
-// ============================================
-const BAIDU_TTS = {
-    appId: '7664376',
-    apiKey: 'jZie8aJhPhjd4elJIpWrh41J',
-    secretKey: 'TYSz5twRYNbKWF5DLYDZucdF9VlL1gyS',
-    _token: null,
-    _expireAt: 0
-};
-
-// 获取百度 access_token（缓存 29 天）
-async function getBaiduToken() {
-    if (BAIDU_TTS._token && Date.now() < BAIDU_TTS._expireAt) {
-        return BAIDU_TTS._token;
-    }
-    try {
-        const res = await fetch('https://aip.baidubce.com/oauth/2.0/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({
-                grant_type: 'client_credentials',
-                client_id: BAIDU_TTS.apiKey,
-                client_secret: BAIDU_TTS.secretKey
-            })
-        });
-        const data = await res.json();
-        if (data.access_token) {
-            BAIDU_TTS._token = data.access_token;
-            BAIDU_TTS._expireAt = Date.now() + 29 * 24 * 60 * 60 * 1000;
-            return BAIDU_TTS._token;
-        }
-    } catch (e) {
-        console.log('获取百度 TTS token 失败:', e);
-    }
-    return null;
-}
-
-// 音频上下文（用于解锁移动端）
-let _appAudioCtx = null;
-function _ensureAudioCtx() {
-    if (!_appAudioCtx) {
-        try {
-            _appAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        } catch (e) {}
-    }
-    if (_appAudioCtx && _appAudioCtx.state === 'suspended') {
-        _appAudioCtx.resume();
-    }
-}
-
-// 语音播报：先尝试百度 TTS，失败再尝试 speechSynthesis
-async function speakText(text) {
-    if (!text) return;
-    // 解锁音频上下文
-    _ensureAudioCtx();
-    
-    const token = await getBaiduToken();
-    if (token) {
-        try {
-            const params = new URLSearchParams({
-                tex: encodeURIComponent(text),
-                tok: token,
-                cuid: BAIDU_TTS.appId,
-                ctp: '1', lan: 'zh',
-                spd: '5', pit: '5', vol: '15', per: '0', aue: '3'
-            });
-            const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
-            await new Promise((resolve, reject) => {
-                const audio = new Audio();
-                audio.preload = 'auto';
-                audio.addEventListener('canplaythrough', () => {
-                    audio.play().then(resolve).catch(reject);
-                }, { once: true });
-                audio.addEventListener('error', reject, { once: true });
-                audio.src = ttsUrl;
-                audio.load();
-            });
-            return; // 百度成功，直接返回
-        } catch (e) {
-            console.log('百度 TTS 播放失败:', e);
-        }
-    }
-    // fallback：浏览器自带（Chrome/Edge 可用，微信里静默跳过）
-    if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
-        try {
-            window.speechSynthesis.cancel();
-            const utt = new SpeechSynthesisUtterance(text);
-            utt.lang = 'zh-CN';
-            utt.rate = 1.2;
-            window.speechSynthesis.speak(utt);
-        } catch (e) {}
-    }
-}
-
-// 首次用户交互时解锁音频（在绑定事件之前设置）
-(function setupAudioUnlock() {
-    const unlock = () => {
-        _ensureAudioCtx();
-        // 同时预热百度 token
-        getBaiduToken();
-        document.removeEventListener('click', unlock);
-        document.removeEventListener('touchstart', unlock);
-    };
-    document.addEventListener('click', unlock);
-    document.addEventListener('touchstart', unlock);
-})();
-
-// ============================================
 // 配置与常量
 // ============================================
 const STORAGE_KEYS = {
@@ -210,9 +102,12 @@ function showStatus(message, type = "info") {
     statusEl.textContent = message;
     statusEl.className = `status-toast is-${type}`;
     
-    // 语音朗读（百度 TTS 优先，兼容微信 WebView）
-    if (state.settings?.voiceEnabled) {
-        speakText(message);
+    // 语音朗读（如果启用）
+    if (window.speechSynthesis && state.settings?.voiceEnabled) {
+        const utterance = new SpeechSynthesisUtterance(message);
+        utterance.lang = "zh-CN";
+        utterance.rate = 1.2;
+        window.speechSynthesis.speak(utterance);
     }
     
     // 3秒后自动清除
