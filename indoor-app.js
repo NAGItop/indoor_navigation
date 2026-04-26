@@ -1116,6 +1116,373 @@ function playVoiceOnSound() {
     setTimeout(() => playTone(1047, 0.3), 1200); // C6 - 启
 }
 
+// ============================================
+// 语音识别模块（百度短语音识别 REST API）
+// ============================================
+let voiceRecognition = null;       // 当前录音状态
+let voiceRecording = false;        // 是否正在录音
+let voiceTarget = null;            // 'start' 或 'end'，标识当前是录入起点还是终点
+let mediaRecorder = null;          // MediaRecorder 实例
+let audioChunks = [];              // 录音数据块
+
+// 百度语音识别 API 配置（复用 TTS 的 access token）
+const BAIDU_ASR_FORMAT = 'wav';    // 录音格式
+const BAIDU_ASR_SAMPLE_RATE = 16000; // 采样率（百度要求16000）
+const BAIDU_ASR_CUID = '7664376';
+
+// 检查是否支持录音（getUserMedia）
+function isSpeechRecognitionSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+// 从识别文字中匹配房间
+// 支持说"去卫生间"、"导航到103教室"、"去三楼实验室"、"101"等
+function matchRoomByText(text) {
+    // 去掉空格和常见前缀
+    let cleaned = text.replace(/\s+/g, '')
+        .replace(/去|到|导航到|我要去|前往|带我去|想(要|去)|走(到)?/g, '')
+        .trim();
+    
+    if (!cleaned) return null;
+    
+    // 先尝试精确匹配 id（如 "101"、"201"）
+    let match = ALL_ROOMS.find(r => r.id === cleaned || r.id.endsWith(cleaned));
+    if (match) return match;
+    
+    // 尝试匹配名称中的数字+关键词（如 "103教室"、"一楼卫生间"、"三楼实验室"）
+    match = ALL_ROOMS.find(r => {
+        const nameClean = r.name.replace(/[📚🔬💻🏢🚻🚪🪜\s]/g, '');
+        return cleaned.includes(nameClean) || nameClean.includes(cleaned);
+    });
+    if (match) return match;
+    
+    // 模糊匹配：提取数字，查找对应房间
+    const numMatch = cleaned.match(/\d{3}/);
+    if (numMatch) {
+        match = ALL_ROOMS.find(r => r.id.includes(numMatch[0]));
+        if (match) return match;
+    }
+    
+    // 关键词匹配
+    const keywordMap = {
+        '卫生间': ['卫生间'],
+        '厕所': ['卫生间'],
+        '洗手间': ['卫生间'],
+        '办公室': ['办公室'],
+        '实验室': ['实验室'],
+        '机房': ['计算机室'],
+        '电脑室': ['计算机室'],
+        '计算机': ['计算机室'],
+        '大门': ['大门'],
+        '门口': ['大门'],
+        '入口': ['大门'],
+    };
+    
+    for (const [keyword, roomKeywords] of Object.entries(keywordMap)) {
+        if (cleaned.includes(keyword)) {
+            // 如果带了楼层信息，优先匹配指定楼层
+            const floorMatch = cleaned.match(/([一二三四五六七八九十1234567890]+)楼/);
+            if (floorMatch) {
+                let floorNum;
+                const fStr = floorMatch[1];
+                const floorWords = {'一':1,'二':2,'三':3,'四':4,'五':5};
+                floorNum = floorWords[fStr] || parseInt(fStr);
+                if (floorNum) {
+                    match = ALL_ROOMS.find(r =>
+                        r.floor === floorNum &&
+                        roomKeywords.some(k => r.name.replace(/[📚🔬💻🏢🚻🚪🪜\s]/g, '').includes(k))
+                    );
+                    if (match) return match;
+                }
+            }
+            // 没有楼层信息，返回当前楼层的匹配房间
+            match = ALL_ROOMS.find(r =>
+                r.floor === state.viewFloor &&
+                roomKeywords.some(k => r.name.replace(/[📚🔬💻🏢🚻🚪🪜\s]/g, '').includes(k))
+            );
+            if (match) return match;
+        }
+    }
+    
+    return null;
+}
+
+// 开始语音识别（百度 API 版）
+async function startVoiceInput(target) {
+    if (voiceRecording) {
+        stopVoiceInput();
+        return;
+    }
+
+    if (!isSpeechRecognitionSupported()) {
+        showResult('您的浏览器不支持录音功能，请使用 Chrome 浏览器', 'error');
+        return;
+    }
+
+    voiceTarget = target; // 'start' 或 'end'
+    voiceRecording = true;
+    audioChunks = [];
+
+    // 更新按钮状态
+    const btnId = target === 'start' ? 'voiceStartBtn' : 'voiceEndBtn';
+    const btn = document.getElementById(btnId);
+    if (btn) {
+        btn.classList.add('recording');
+        btn.querySelector('.voice-icon').textContent = '⏹️';
+        btn.setAttribute('aria-label', '正在录音，点击停止');
+    }
+
+    playBeep(); // 播放开始录音提示音
+
+    try {
+        // 获取麦克风权限并开始录音
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                sampleRate: BAIDU_ASR_SAMPLE_RATE,
+                echoCancellation: true,
+                noiseSuppression: true,
+            }
+        });
+
+        // 选择支持的 MIME 类型（优先 PCM/WAV）
+        let mimeType = 'audio/webm;codecs=pcm';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'audio/webm';
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'audio/mp4';
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = ''; // 让浏览器自行选择
+        }
+
+        mediaRecorder = mimeType
+            ? new MediaRecorder(stream, { mimeType })
+            : new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+                audioChunks.push(e.data);
+            }
+        };
+
+        mediaRecorder.onstop = async () => {
+            // 停止所有音频轨道
+            stream.getTracks().forEach(track => track.stop());
+
+            if (audioChunks.length === 0) {
+                showResult('未录制到音频，请再试一次', 'error');
+                resetVoiceBtn();
+                return;
+            }
+
+            const label = target === 'start' ? '起点' : '终点';
+            showResult(`正在识别${label}语音，请稍候...`, 'info');
+
+            try {
+                const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+                const recognizedText = await recognizeWithBaidu(audioBlob, mediaRecorder.mimeType);
+                console.log('[语音识别] 结果:', recognizedText);
+
+                if (recognizedText) {
+                    const matchedRoom = matchRoomByText(recognizedText);
+
+                    if (matchedRoom) {
+                        // 匹配成功，设置下拉框
+                        const selectId = target === 'start' ? 'startSelect' : 'endSelect';
+                        const select = document.getElementById(selectId);
+                        if (select) {
+                            select.value = matchedRoom.id;
+                        }
+                        showResult(`已设置${label}：${matchedRoom.name}`, 'success');
+                        playSuccessSound();
+                        hapticFeedback('success');
+                    } else {
+                        showResult(`识别到"${recognizedText}"，但未匹配到有效位置。请再说一次（如"去卫生间"、"103教室"）`, 'error');
+                        playTone(200, 0.3);
+                        hapticFeedback('error');
+                    }
+                } else {
+                    showResult('语音识别未返回结果，请再试一次', 'error');
+                    playTone(200, 0.3);
+                    hapticFeedback('error');
+                }
+            } catch (e) {
+                console.log('[语音识别] 处理失败:', e);
+                showResult('语音识别失败：' + (e.message || '未知错误'), 'error');
+                playTone(200, 0.3);
+                hapticFeedback('error');
+            }
+
+            resetVoiceBtn();
+        };
+
+        mediaRecorder.onerror = (e) => {
+            console.log('[语音识别] MediaRecorder 错误:', e.error);
+            stream.getTracks().forEach(track => track.stop());
+            showResult('录音出错：' + (e.error?.message || '未知错误'), 'error');
+            resetVoiceBtn();
+        };
+
+        // 每200ms收集一次数据，确保短语音也能采集到
+        mediaRecorder.start(200);
+    } catch (e) {
+        console.log('[语音识别] 启动失败:', e);
+        if (e.name === 'NotAllowedError') {
+            showResult('请允许麦克风权限后重试', 'error');
+        } else if (e.name === 'NotFoundError') {
+            showResult('未检测到麦克风设备', 'error');
+        } else {
+            showResult('录音启动失败：' + (e.message || '未知错误'), 'error');
+        }
+        resetVoiceBtn();
+    }
+}
+
+// 调用百度短语音识别 API
+async function recognizeWithBaidu(audioBlob, mimeType) {
+    const token = await getBaiduAccessToken();
+    if (!token) {
+        throw new Error('无法获取百度 access token');
+    }
+
+    // 百度 API 要求的音频格式：pcm（不带头）或 wav（带标准头）
+    // MediaRecorder 输出通常是 webm/opus，需要转换为 PCM
+    const pcmData = await audioBlobToPCM(audioBlob);
+    console.log('[语音识别] PCM 数据大小:', pcmData.byteLength, '字节');
+
+    if (pcmData.byteLength < 100) {
+        throw new Error('音频数据过短，请录制更长时间');
+    }
+
+    // 转为 base64
+    const base64Audio = arrayBufferToBase64(pcmData);
+
+    // 构建请求参数
+    const params = new URLSearchParams({
+        format: 'pcm',
+        rate: String(BAIDU_ASR_SAMPLE_RATE),
+        channel: '1',
+        token: token,
+        cuid: BAIDU_ASR_CUID,
+        len: String(pcmData.byteLength),
+        dev_pid: '1537', // 普通话（有标点，支持搜索模型）
+        speech: base64Audio
+    });
+
+    const response = await fetch('https://vop.baidu.com/server_api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+    });
+
+    const data = await response.json();
+    console.log('[语音识别] API 响应:', data);
+
+    if (data.err_no === 0 && data.result && data.result.length > 0) {
+        return data.result[0];
+    } else {
+        const errMsg = {
+            3301: '音频质量差',
+            3302: '鉴权失败',
+            3303: '语音识别服务忙',
+            3304: '用户配额已用完',
+            3305: '音频时长过长',
+            3307: '语音数据为空',
+            3308: '音频过大',
+            3309: '音频格式不支持',
+            3310: '采样率不正确',
+        };
+        const msg = errMsg[data.err_no] || `错误码 ${data.err_no}`;
+        throw new Error(msg);
+    }
+}
+
+// 将录音 Blob 转换为 16kHz 16bit 单声道 PCM 数据
+async function audioBlobToPCM(blob) {
+    // 使用 Web Audio API 解码音频
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioCtx = initAudio();
+    if (!audioCtx) throw new Error('无法创建音频上下文');
+
+    let audioBuffer;
+    try {
+        audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    } catch (e) {
+        console.log('[语音识别] 解码失败，尝试使用原始数据');
+        // 如果解码失败（某些浏览器不支持 webm），返回原始数据
+        // 注意：这种情况下百度 API 可能无法识别
+        throw new Error('音频格式解码失败，请使用 Chrome 浏览器');
+    }
+
+    // 重采样到 16kHz 单声道
+    const targetSampleRate = BAIDU_ASR_SAMPLE_RATE;
+    const numChannels = 1;
+    const length = Math.round(audioBuffer.duration * targetSampleRate);
+    const offCtx = new OfflineAudioContext(numChannels, length, targetSampleRate);
+
+    const source = offCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offCtx.destination);
+    source.start(0);
+
+    const renderedBuffer = await offCtx.startRendering();
+
+    // 提取 PCM 数据（16bit signed integer）
+    const channelData = renderedBuffer.getChannelData(0);
+    const pcmData = new Int16Array(channelData.length);
+    for (let i = 0; i < channelData.length; i++) {
+        const s = Math.max(-1, Math.min(1, channelData[i]));
+        pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+
+    return pcmData.buffer;
+}
+
+// ArrayBuffer 转 Base64
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+        binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+}
+
+// 停止语音识别
+function stopVoiceInput() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        try { mediaRecorder.stop(); } catch(e) {}
+    }
+    mediaRecorder = null;
+    // resetVoiceBtn 在 onstop 回调中执行
+}
+
+// 重置语音按钮状态
+function resetVoiceBtn() {
+    voiceRecording = false;
+    ['voiceStartBtn', 'voiceEndBtn'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.classList.remove('recording');
+            btn.querySelector('.voice-icon').textContent = '🎤';
+            btn.setAttribute('aria-label', id.includes('Start') ? '语音输入起点' : '语音输入终点');
+        }
+    });
+}
+
+// 绑定语音按钮事件
+function bindVoiceEvents() {
+    const startBtn = document.getElementById('voiceStartBtn');
+    const endBtn = document.getElementById('voiceEndBtn');
+
+    if (startBtn) startBtn.addEventListener('click', () => startVoiceInput('start'));
+    if (endBtn) endBtn.addEventListener('click', () => startVoiceInput('end'));
+}
+
 // 百度语音合成配置
 const BAIDU_TTS_CONFIG = {
     appId: '7664376',
@@ -1356,6 +1723,7 @@ function init() {
     initSelectors();
     initFloorButtons();
     bindEvents();
+    bindVoiceEvents();  // 绑定语音识别按钮事件
     
     // 同步语音按钮初始状态
     updateVoiceButton();

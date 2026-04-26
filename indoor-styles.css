@@ -311,6 +311,51 @@ body {
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
 }
 
+/* 语音输入按钮 */
+.voice-input-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    border: 2px solid var(--color-border);
+    border-radius: 50%;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-size: 1.2rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.voice-input-btn:active,
+.voice-input-btn:focus {
+    border-color: var(--color-primary);
+    background: rgba(59, 130, 246, 0.1);
+}
+
+/* 录音中状态 - 脉冲动画 */
+.voice-input-btn.recording {
+    border-color: var(--color-danger);
+    background: rgba(239, 68, 68, 0.15);
+    animation: voicePulse 1.2s ease-in-out infinite;
+}
+
+.voice-input-btn.recording .voice-icon {
+    font-size: 1rem;
+}
+
+@keyframes voicePulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+    }
+}
+
 .location-divider {
     display: flex;
     align-items: center;
