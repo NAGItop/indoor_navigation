@@ -1192,59 +1192,54 @@ async function speakWithBaidu(text) {
             await ctx.resume();
         }
         
-        // 先尝试直接播放（Chrome/Edge）
-        let directOk = false;
-        try {
-            directOk = await new Promise((resolve, reject) => {
-                const audio = new Audio();
-                audio.preload = 'auto';
-                const timer = setTimeout(() => reject(new Error('timeout')), 8000);
-                audio.addEventListener('canplaythrough', () => {
-                    clearTimeout(timer);
-                    audio.play().then(resolve).catch(reject);
-                }, { once: true });
-                audio.addEventListener('error', (e) => {
-                    clearTimeout(timer);
-                    reject(new Error('audio error: ' + (audio.error?.code || e.message)));
-                }, { once: true });
-                audio.src = ttsUrl;
-                audio.load();
-            });
-        } catch (directErr) {
-            console.log('[TTS] 直接播放失败，尝试 fetch 方式:', directErr.message);
-            directOk = false;
-        }
-        if (directOk) return true;
-        
-        // 直接播放失败 → 用 fetch 下载音频再转 Blob URL 播放（绕过微信跨域限制）
-        console.log('[TTS] 尝试 fetch + Blob URL 方式...');
-        const response = await fetch(ttsUrl);
-        if (!response.ok) throw new Error('fetch status: ' + response.status);
-        
-        const blob = await response.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        
-        await new Promise((resolve, reject) => {
-            const audio = new Audio();
-            audio.preload = 'auto';
-            const timer = setTimeout(() => { URL.revokeObjectURL(blobUrl); reject(new Error('blob play timeout')); }, 8000);
-            audio.addEventListener('canplaythrough', () => {
-                clearTimeout(timer);
-                audio.play()
-                    .then(() => { URL.revokeObjectURL(blobUrl); resolve(); })
-                    .catch(e => { URL.revokeObjectURL(blobUrl); reject(e); });
-            }, { once: true });
-            audio.addEventListener('error', (e) => {
-                clearTimeout(timer);
-                URL.revokeObjectURL(blobUrl);
-                reject(new Error('blob audio error: ' + (audio.error?.code || e.message)));
-            }, { once: true });
-            audio.src = blobUrl;
-            audio.load();
+        // 策略1：用 XMLHttpRequest 下载音频数据（比 fetch 更兼容微信）
+        const arrayBuffer = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', ttsUrl, true);
+            xhr.responseType = 'arraybuffer';
+            xhr.timeout = 10000;
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    resolve(xhr.response);
+                } else {
+                    reject(new Error('XHR status: ' + xhr.status));
+                }
+            };
+            xhr.onerror = function() { reject(new Error('XHR network error')); };
+            xhr.ontimeout = function() { reject(new Error('XHR timeout')); };
+            xhr.send();
         });
+        
+        console.log('[TTS] 音频数据下载成功，大小:', arrayBuffer.byteLength);
+        
+        // 策略2：用 Web Audio API 的 decodeAudioData 解码并播放
+        // 这是最底层的方式，微信 WebView 无法拦截
+        const audioCtx = initAudio();
+        if (!audioCtx) {
+            console.log('[TTS] 无 AudioContext');
+            return false;
+        }
+        
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        console.log('[TTS] 解码成功，时长:', audioBuffer.duration.toFixed(2), '秒');
+        
+        // 创建音源并播放
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = 1.0;
+        source.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        source.start(0);
+        
+        // 等待播放完毕
+        await new Promise(resolve => {
+            source.onended = resolve;
+        });
+        
         return true;
     } catch (e) {
-        console.log('[TTS] 百度语音合成最终失败:', e.message);
+        console.log('[TTS] 百度语音合成失败:', e.message);
         return false;
     }
 }

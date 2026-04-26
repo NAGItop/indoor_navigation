@@ -54,7 +54,7 @@ function _ensureAudioCtx() {
     }
 }
 
-// 语音播报：先尝试百度 TTS，失败再尝试 speechSynthesis
+// 语音播报：用 XHR + Web Audio API 播放百度 TTS（兼容微信 WebView）
 async function speakText(text) {
     if (!text) return;
     // 解锁音频上下文
@@ -72,52 +72,39 @@ async function speakText(text) {
             });
             const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
             
-            // 先尝试直接播放（Chrome/Edge）
-            let directOk = false;
-            try {
-                directOk = await new Promise((resolve, reject) => {
-                    const audio = new Audio();
-                    audio.preload = 'auto';
-                    const timer = setTimeout(() => reject(new Error('timeout')), 8000);
-                    audio.addEventListener('canplaythrough', () => {
-                        clearTimeout(timer);
-                        audio.play().then(resolve).catch(reject);
-                    }, { once: true });
-                    audio.addEventListener('error', reject, { once: true });
-                    audio.src = ttsUrl;
-                    audio.load();
-                });
-            } catch (e) { directOk = false; }
-            if (directOk) return;
+            // 用 XHR 下载音频数据（比 fetch 更兼容微信）
+            const arrayBuffer = await new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', ttsUrl, true);
+                xhr.responseType = 'arraybuffer';
+                xhr.timeout = 10000;
+                xhr.onload = function() {
+                    if (xhr.status === 200) resolve(xhr.response);
+                    else reject(new Error('status ' + xhr.status));
+                };
+                xhr.onerror = function() { reject(new Error('network error')); };
+                xhr.ontimeout = function() { reject(new Error('timeout')); };
+                xhr.send();
+            });
             
-            // 直接失败 → fetch + Blob URL（绕过微信跨域限制）
-            const response = await fetch(ttsUrl);
-            if (response.ok) {
-                const blob = await response.blob();
-                const blobUrl = URL.createObjectURL(blob);
-                await new Promise((resolve, reject) => {
-                    const audio = new Audio();
-                    audio.preload = 'auto';
-                    const timer = setTimeout(() => { URL.revokeObjectURL(blobUrl); reject(new Error('timeout')); }, 8000);
-                    audio.addEventListener('canplaythrough', () => {
-                        clearTimeout(timer);
-                        audio.play()
-                            .then(() => { URL.revokeObjectURL(blobUrl); resolve(); })
-                            .catch(e => { URL.revokeObjectURL(blobUrl); reject(e); });
-                    }, { once: true });
-                    audio.addEventListener('error', (e) => {
-                        clearTimeout(timer); URL.revokeObjectURL(blobUrl); reject(e);
-                    }, { once: true });
-                    audio.src = blobUrl;
-                    audio.load();
-                });
+            // Web Audio API 解码播放
+            const audioCtx = _appAudioCtx;
+            if (audioCtx) {
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                const gain = audioCtx.createGain();
+                gain.gain.value = 1.0;
+                source.connect(gain);
+                gain.connect(audioCtx.destination);
+                source.start(0);
                 return;
             }
         } catch (e) {
             console.log('百度 TTS 播放失败:', e.message);
         }
     }
-    // fallback：浏览器自带（Chrome/Edge 可用，微信里静默跳过）
+    // fallback：浏览器自带
     if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
         try {
             window.speechSynthesis.cancel();
