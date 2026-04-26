@@ -1611,40 +1611,24 @@ const BAIDU_TTS_CONFIG = {
 let baiduAccessToken = '24.88341b6b0af1b86b69142fb92b927417.2592000.1779791566.282335-123010579';
 let tokenExpireTime = Date.now() + (25 * 24 * 60 * 60 * 1000); // token 获取时间: 2026-04-26, 有效期30天, 设25天过期
 
-// 获取百度 access token（优先用硬编码，失败则尝试 CORS 代理）
+// 获取百度 access token（直接使用硬编码 token，避免 CORS 错误）
 async function getBaiduAccessToken() {
-    // 如果 token 还有效，直接返回
+    // 硬编码 token 有效期内直接返回，不发任何网络请求
     if (baiduAccessToken && Date.now() < tokenExpireTime) {
+        console.log('[Token] 使用硬编码 token（剩余有效期：' + Math.round((tokenExpireTime - Date.now()) / (24*60*60*1000)) + '天）');
         return baiduAccessToken;
     }
     
-    // 尝试多个 CORS 代理
+    // Token 过期后尝试 CORS 代理刷新
+    console.log('[Token] 硬编码 token 已过期，尝试刷新...');
+    const tokenUrl = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id='
+        + BAIDU_TTS_CONFIG.apiKey + '&client_secret=' + BAIDU_TTS_CONFIG.secretKey;
+    
     const proxyUrls = [
         'https://corsproxy.io/?',
         'https://api.allorigins.win/raw?url=',
     ];
     
-    const tokenUrl = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id='
-        + BAIDU_TTS_CONFIG.apiKey + '&client_secret=' + BAIDU_TTS_CONFIG.secretKey;
-    
-    // 方案1：直接请求（同源部署时可用）
-    try {
-        const response = await fetch(tokenUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        const data = await response.json();
-        if (data.access_token) {
-            baiduAccessToken = data.access_token;
-            tokenExpireTime = Date.now() + (29 * 24 * 60 * 60 * 1000);
-            console.log('[Token] 直接获取成功');
-            return baiduAccessToken;
-        }
-    } catch (e) {
-        console.log('[Token] 直接获取失败，尝试 CORS 代理...');
-    }
-    
-    // 方案2：通过 CORS 代理
     for (const proxy of proxyUrls) {
         try {
             const response = await fetch(proxy + encodeURIComponent(tokenUrl));
@@ -1652,15 +1636,15 @@ async function getBaiduAccessToken() {
             if (data.access_token) {
                 baiduAccessToken = data.access_token;
                 tokenExpireTime = Date.now() + (29 * 24 * 60 * 60 * 1000);
-                console.log('[Token] 通过代理获取成功');
+                console.log('[Token] 通过代理刷新成功');
                 return baiduAccessToken;
             }
         } catch (e) {
-            console.log('[Token] 代理', proxy, '失败，尝试下一个...');
+            console.log('[Token] 代理', proxy, '失败');
         }
     }
     
-    console.log('[Token] 所有方式均失败');
+    console.log('[Token] 刷新失败，请手动更新硬编码 token');
     return null;
 }
 
