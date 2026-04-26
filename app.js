@@ -71,19 +71,50 @@ async function speakText(text) {
                 spd: '5', pit: '5', vol: '15', per: '0', aue: '3'
             });
             const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
-            await new Promise((resolve, reject) => {
-                const audio = new Audio();
-                audio.preload = 'auto';
-                audio.addEventListener('canplaythrough', () => {
-                    audio.play().then(resolve).catch(reject);
-                }, { once: true });
-                audio.addEventListener('error', reject, { once: true });
-                audio.src = ttsUrl;
-                audio.load();
-            });
-            return; // 百度成功，直接返回
+            
+            // 先尝试直接播放（Chrome/Edge）
+            let directOk = false;
+            try {
+                directOk = await new Promise((resolve, reject) => {
+                    const audio = new Audio();
+                    audio.preload = 'auto';
+                    const timer = setTimeout(() => reject(new Error('timeout')), 8000);
+                    audio.addEventListener('canplaythrough', () => {
+                        clearTimeout(timer);
+                        audio.play().then(resolve).catch(reject);
+                    }, { once: true });
+                    audio.addEventListener('error', reject, { once: true });
+                    audio.src = ttsUrl;
+                    audio.load();
+                });
+            } catch (e) { directOk = false; }
+            if (directOk) return;
+            
+            // 直接失败 → fetch + Blob URL（绕过微信跨域限制）
+            const response = await fetch(ttsUrl);
+            if (response.ok) {
+                const blob = await response.blob();
+                const blobUrl = URL.createObjectURL(blob);
+                await new Promise((resolve, reject) => {
+                    const audio = new Audio();
+                    audio.preload = 'auto';
+                    const timer = setTimeout(() => { URL.revokeObjectURL(blobUrl); reject(new Error('timeout')); }, 8000);
+                    audio.addEventListener('canplaythrough', () => {
+                        clearTimeout(timer);
+                        audio.play()
+                            .then(() => { URL.revokeObjectURL(blobUrl); resolve(); })
+                            .catch(e => { URL.revokeObjectURL(blobUrl); reject(e); });
+                    }, { once: true });
+                    audio.addEventListener('error', (e) => {
+                        clearTimeout(timer); URL.revokeObjectURL(blobUrl); reject(e);
+                    }, { once: true });
+                    audio.src = blobUrl;
+                    audio.load();
+                });
+                return;
+            }
         } catch (e) {
-            console.log('百度 TTS 播放失败:', e);
+            console.log('百度 TTS 播放失败:', e.message);
         }
     }
     // fallback：浏览器自带（Chrome/Edge 可用，微信里静默跳过）

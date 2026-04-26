@@ -1165,7 +1165,7 @@ async function getBaiduAccessToken() {
 async function speakWithBaidu(text) {
     const token = await getBaiduAccessToken();
     if (!token) {
-        console.log('无法获取百度语音合成 token');
+        console.log('[TTS] 无法获取百度 token');
         return false;
     }
     
@@ -1192,25 +1192,59 @@ async function speakWithBaidu(text) {
             await ctx.resume();
         }
         
-        // 用 Promise 包装音频加载+播放，兼容微信/Edge 的严格策略
+        // 先尝试直接播放（Chrome/Edge）
+        let directOk = false;
+        try {
+            directOk = await new Promise((resolve, reject) => {
+                const audio = new Audio();
+                audio.preload = 'auto';
+                const timer = setTimeout(() => reject(new Error('timeout')), 8000);
+                audio.addEventListener('canplaythrough', () => {
+                    clearTimeout(timer);
+                    audio.play().then(resolve).catch(reject);
+                }, { once: true });
+                audio.addEventListener('error', (e) => {
+                    clearTimeout(timer);
+                    reject(new Error('audio error: ' + (audio.error?.code || e.message)));
+                }, { once: true });
+                audio.src = ttsUrl;
+                audio.load();
+            });
+        } catch (directErr) {
+            console.log('[TTS] 直接播放失败，尝试 fetch 方式:', directErr.message);
+            directOk = false;
+        }
+        if (directOk) return true;
+        
+        // 直接播放失败 → 用 fetch 下载音频再转 Blob URL 播放（绕过微信跨域限制）
+        console.log('[TTS] 尝试 fetch + Blob URL 方式...');
+        const response = await fetch(ttsUrl);
+        if (!response.ok) throw new Error('fetch status: ' + response.status);
+        
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        
         await new Promise((resolve, reject) => {
             const audio = new Audio();
             audio.preload = 'auto';
-            // 加载完毕后播放
+            const timer = setTimeout(() => { URL.revokeObjectURL(blobUrl); reject(new Error('blob play timeout')); }, 8000);
             audio.addEventListener('canplaythrough', () => {
+                clearTimeout(timer);
                 audio.play()
-                    .then(resolve)
-                    .catch(reject);
+                    .then(() => { URL.revokeObjectURL(blobUrl); resolve(); })
+                    .catch(e => { URL.revokeObjectURL(blobUrl); reject(e); });
             }, { once: true });
             audio.addEventListener('error', (e) => {
-                reject(new Error('audio load error: ' + (e.message || audio.error?.code)));
+                clearTimeout(timer);
+                URL.revokeObjectURL(blobUrl);
+                reject(new Error('blob audio error: ' + (audio.error?.code || e.message)));
             }, { once: true });
-            audio.src = ttsUrl;
+            audio.src = blobUrl;
             audio.load();
         });
         return true;
     } catch (e) {
-        console.log('百度语音合成播放失败:', e);
+        console.log('[TTS] 百度语音合成最终失败:', e.message);
         return false;
     }
 }
