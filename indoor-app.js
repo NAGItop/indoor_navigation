@@ -1608,10 +1608,10 @@ const BAIDU_TTS_CONFIG = {
 };
 
 // 存储 access token
-let baiduAccessToken = null;
-let tokenExpireTime = 0;
+let baiduAccessToken = '24.88341b6b0af1b86b69142fb92b927417.2592000.1779791566.282335-123010579';
+let tokenExpireTime = Date.now() + (25 * 24 * 60 * 60 * 1000); // token 获取时间: 2026-04-26, 有效期30天, 设25天过期
 
-// 获取百度 access token（通过 CORS 代理解决跨域问题）
+// 获取百度 access token（优先用硬编码，失败则尝试 CORS 代理）
 async function getBaiduAccessToken() {
     // 如果 token 还有效，直接返回
     if (baiduAccessToken && Date.now() < tokenExpireTime) {
