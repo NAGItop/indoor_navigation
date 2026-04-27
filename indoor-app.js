@@ -1838,20 +1838,26 @@ function speakWithBrowser(text) {
             window.speechSynthesis.cancel();
             const utt = new SpeechSynthesisUtterance(text);
             utt.lang = "zh-CN";
-            utt.rate = 1.05;
+            utt.rate = 1.1;
             utt.pitch = 1;
+            utt.volume = 1;
 
             utt.onend = () => { resolve(true); };
             utt.onerror = (e) => {
-                console.log('[TTS] speechSynthesis 错误:', e);
-                resolve(false);
+                // error="interrupted" 是 cancel 导致的，不算真正失败
+                if (e.error === 'interrupted' || e.error === 'canceled') {
+                    resolve(true);
+                } else {
+                    console.log('[TTS] speechSynthesis 错误:', e.error);
+                    resolve(false);
+                }
             };
 
-            // 某些浏览器 speechSynthesis 长时间不用会"休眠"，cancel+小延时唤醒
-            window.speechSynthesis.cancel();
-            setTimeout(() => {
-                window.speechSynthesis.speak(utt);
-            }, 50);
+            // Chrome 长时间不用的 bug：需要 cancel 后立即 speak
+            window.speechSynthesis.speak(utt);
+
+            // 安全超时（防止 onend 不触发）
+            setTimeout(() => resolve(true), 15000);
         } catch (e) {
             console.log('[TTS] speechSynthesis 异常:', e);
             resolve(false);

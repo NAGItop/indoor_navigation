@@ -4,44 +4,39 @@
  */
 
 // ============================================
-// 百度语音合成（外层页面）
+// 语音播报（外层页面）
 // ============================================
 const BAIDU_TTS = {
     appId: '7664376',
     apiKey: 'jZie8aJhPhjd4elJIpWrh41J',
     secretKey: 'TYSz5twRYNbKWF5DLYDZucdF9VlL1gyS',
-    _token: null,
+    _token: '24.88341b6b0af1b86b69142fb92b927417.2592000.1779791566.282335-123010579',
     _expireAt: 0
 };
 
-// 获取百度 access_token（缓存 29 天）
+// 获取百度 access_token（硬编码 token 优先，避免 CORS）
 async function getBaiduToken() {
     if (BAIDU_TTS._token && Date.now() < BAIDU_TTS._expireAt) {
         return BAIDU_TTS._token;
     }
-    try {
-        const res = await fetch('https://aip.baidubce.com/oauth/2.0/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({
-                grant_type: 'client_credentials',
-                client_id: BAIDU_TTS.apiKey,
-                client_secret: BAIDU_TTS.secretKey
-            })
-        });
-        const data = await res.json();
-        if (data.access_token) {
-            BAIDU_TTS._token = data.access_token;
-            BAIDU_TTS._expireAt = Date.now() + 29 * 24 * 60 * 60 * 1000;
-            return BAIDU_TTS._token;
-        }
-    } catch (e) {
-        console.log('获取百度 TTS token 失败:', e);
-    }
-    return null;
+    // 硬编码 token（2026-04-26 获取，有效期30天）
+    BAIDU_TTS._expireAt = Date.now() + 25 * 24 * 60 * 60 * 1000;
+    return BAIDU_TTS._token;
 }
 
-// 音频上下文（用于解锁移动端）
+// 判断移动端
+function _isMobile() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        || (navigator.maxTouchPoints > 1);
+}
+
+// CORS 代理列表
+const _CORS_PROXIES = [
+    'https://corsproxy.io/?',
+    'https://api.allorigins.win/raw?url=',
+];
+
+// 音频上下文
 let _appAudioCtx = null;
 function _ensureAudioCtx() {
     if (!_appAudioCtx) {
@@ -54,66 +49,127 @@ function _ensureAudioCtx() {
     }
 }
 
-// 语音播报：用 XHR + Web Audio API 播放百度 TTS（兼容微信 WebView）
-async function speakText(text) {
-    if (!text) return;
-    // 解锁音频上下文
-    _ensureAudioCtx();
-    
-    const token = await getBaiduToken();
-    if (token) {
-        try {
-            const params = new URLSearchParams({
-                tex: encodeURIComponent(text),
-                tok: token,
-                cuid: BAIDU_TTS.appId,
-                ctp: '1', lan: 'zh',
-                spd: '5', pit: '5', vol: '15', per: '0', aue: '3'
-            });
-            const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
-            
-            // 用 XHR 下载音频数据（比 fetch 更兼容微信）
-            const arrayBuffer = await new Promise((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-                xhr.open('GET', ttsUrl, true);
-                xhr.responseType = 'arraybuffer';
-                xhr.timeout = 10000;
-                xhr.onload = function() {
-                    if (xhr.status === 200) resolve(xhr.response);
-                    else reject(new Error('status ' + xhr.status));
-                };
-                xhr.onerror = function() { reject(new Error('network error')); };
-                xhr.ontimeout = function() { reject(new Error('timeout')); };
-                xhr.send();
-            });
-            
-            // Web Audio API 解码播放
-            const audioCtx = _appAudioCtx;
-            if (audioCtx) {
-                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                const gain = audioCtx.createGain();
-                gain.gain.value = 1.0;
-                source.connect(gain);
-                gain.connect(audioCtx.destination);
-                source.start(0);
-                return;
-            }
-        } catch (e) {
-            console.log('百度 TTS 播放失败:', e.message);
+// 用浏览器 speechSynthesis 播报（移动端首选，无需网络）
+function _speakWithBrowser(text) {
+    return new Promise((resolve) => {
+        if (!window.speechSynthesis || typeof window.speechSynthesis.speak !== 'function') {
+            resolve(false);
+            return;
         }
-    }
-    // fallback：浏览器自带
-    if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
         try {
             window.speechSynthesis.cancel();
             const utt = new SpeechSynthesisUtterance(text);
-            utt.lang = 'zh-CN';
-            utt.rate = 1.2;
+            utt.lang = "zh-CN";
+            utt.rate = 1.1;
+            utt.pitch = 1;
+            utt.volume = 1;
+            utt.onend = () => resolve(true);
+            utt.onerror = (e) => {
+                resolve(e.error === 'interrupted' || e.error === 'canceled');
+            };
             window.speechSynthesis.speak(utt);
-        } catch (e) {}
+            setTimeout(() => resolve(true), 15000);
+        } catch (e) {
+            resolve(false);
+        }
+    });
+}
+
+// 用 XHR + Web Audio API 播放百度 TTS
+async function _tryWebAudio(url) {
+    try {
+        const arrayBuffer = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url, true);
+            xhr.responseType = 'arraybuffer';
+            xhr.timeout = 6000;
+            xhr.onload = function() {
+                if (xhr.status === 200 && xhr.response && xhr.response.byteLength > 0) resolve(xhr.response);
+                else reject(new Error('status ' + xhr.status));
+            };
+            xhr.onerror = () => reject(new Error('network'));
+            xhr.ontimeout = () => reject(new Error('timeout'));
+            xhr.send();
+        });
+        const audioCtx = _appAudioCtx;
+        if (!audioCtx) return false;
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        const gain = audioCtx.createGain();
+        gain.gain.value = 1.0;
+        source.connect(gain);
+        gain.connect(audioCtx.destination);
+        source.start(0);
+        await new Promise(r => { source.onended = r; });
+        return true;
+    } catch (e) {
+        return false;
     }
+}
+
+// 用 <audio> 元素播放
+function _playWithAudio(url) {
+    return new Promise((resolve) => {
+        try {
+            const audio = new Audio();
+            audio.preload = 'auto';
+            const tid = setTimeout(() => { audio.pause(); audio.src = ''; resolve(false); }, 10000);
+            audio.oncanplaythrough = () => { audio.play().catch(() => resolve(false)); };
+            audio.onended = () => { clearTimeout(tid); resolve(true); };
+            audio.onerror = () => { clearTimeout(tid); resolve(false); };
+            audio.src = url;
+        } catch (e) { resolve(false); }
+    });
+}
+
+// 百度TTS（多级降级）
+async function _speakWithBaidu(text) {
+    _ensureAudioCtx();
+    const token = await getBaiduToken();
+    if (!token) return false;
+
+    const params = new URLSearchParams({
+        tex: encodeURIComponent(text),
+        tok: token,
+        cuid: BAIDU_TTS.appId,
+        ctp: '1', lan: 'zh',
+        spd: '5', pit: '5', vol: '15', per: '0', aue: '3'
+    });
+    const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
+
+    // 直连 → 代理+WebAudio → 代理+audio → 直连+audio
+    let ok = await _tryWebAudio(ttsUrl);
+    if (ok) return true;
+    for (const proxy of _CORS_PROXIES) {
+        ok = await _tryWebAudio(proxy + encodeURIComponent(ttsUrl));
+        if (ok) return true;
+    }
+    for (const proxy of _CORS_PROXIES) {
+        ok = await _playWithAudio(proxy + encodeURIComponent(ttsUrl));
+        if (ok) return true;
+    }
+    ok = await _playWithAudio(ttsUrl);
+    return ok;
+}
+
+// 主播报函数：移动端优先 speechSynthesis，电脑端优先百度TTS
+async function speakText(text) {
+    if (!text) return;
+    _ensureAudioCtx();
+
+    if (_isMobile()) {
+        // 移动端直接用系统语音，零延迟
+        const ok = await _speakWithBrowser(text);
+        if (ok) return;
+    }
+
+    // 电脑端（或移动端降级）：百度TTS
+    const ok = await _speakWithBaidu(text);
+    if (ok) return;
+
+    // 兜底
+    await _speakWithBrowser(text);
 }
 
 // 首次用户交互时解锁音频（在绑定事件之前设置）
