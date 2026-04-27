@@ -1665,6 +1665,12 @@ async function getBaiduAccessToken() {
     return null;
 }
 
+// CORS 代理列表（用于手机浏览器中转百度TTS请求）
+const CORS_PROXIES = [
+    'https://corsproxy.io/?',
+    'https://api.allorigins.win/raw?url=',
+];
+
 // 使用百度语音合成播报
 async function speakWithBaidu(text) {
     const token = await getBaiduAccessToken();
@@ -1672,7 +1678,7 @@ async function speakWithBaidu(text) {
         console.log('[TTS] 无法获取百度 token');
         return false;
     }
-    
+
     // 构建语音合成 URL
     const params = new URLSearchParams({
         tex: encodeURIComponent(text),
@@ -1686,24 +1692,53 @@ async function speakWithBaidu(text) {
         per: '0',
         aue: '3'
     });
-    
+
     const ttsUrl = `https://tsn.baidu.com/text2audio?${params.toString()}`;
-    
+
     // 确保音频上下文已恢复（移动端需要）
     const ctx = initAudio();
     if (ctx && ctx.state === 'suspended') {
         await ctx.resume();
     }
-    
-    // 策略1：用 XMLHttpRequest 下载音频 + Web Audio API 播放
+
+    // 策略1：直接请求（电脑端 Chrome/Edge 通常可以）
+    console.log('[TTS] 策略1：直连百度TTS');
+    let success = await tryWebAudio(ttsUrl);
+    if (success) return true;
+
+    // 策略2：通过 CORS 代理 + Web Audio API
+    for (let i = 0; i < CORS_PROXIES.length; i++) {
+        console.log('[TTS] 策略2.' + (i+1) + '：CORS代理 + WebAudio');
+        success = await tryWebAudio(CORS_PROXIES[i] + encodeURIComponent(ttsUrl));
+        if (success) return true;
+    }
+
+    // 策略3：通过 CORS 代理 + <audio> 元素
+    for (let i = 0; i < CORS_PROXIES.length; i++) {
+        console.log('[TTS] 策略3.' + (i+1) + '：CORS代理 + audio元素');
+        success = await playWithAudioElement(CORS_PROXIES[i] + encodeURIComponent(ttsUrl));
+        if (success) return true;
+    }
+
+    // 策略4：直接用 <audio> 元素（兜底）
+    console.log('[TTS] 策略4：直连 + audio元素');
+    success = await playWithAudioElement(ttsUrl);
+    if (success) return true;
+
+    console.log('[TTS] 所有策略均失败');
+    return false;
+}
+
+// 用 XHR + Web Audio API 播放
+async function tryWebAudio(url) {
     try {
         const arrayBuffer = await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.open('GET', ttsUrl, true);
+            xhr.open('GET', url, true);
             xhr.responseType = 'arraybuffer';
-            xhr.timeout = 8000;
+            xhr.timeout = 6000;
             xhr.onload = function() {
-                if (xhr.status === 200 && xhr.response.byteLength > 0) {
+                if (xhr.status === 200 && xhr.response && xhr.response.byteLength > 0) {
                     resolve(xhr.response);
                 } else {
                     reject(new Error('XHR status: ' + xhr.status + ', size: ' + (xhr.response ? xhr.response.byteLength : 0)));
@@ -1713,18 +1748,15 @@ async function speakWithBaidu(text) {
             xhr.ontimeout = function() { reject(new Error('XHR timeout')); };
             xhr.send();
         });
-        
+
         console.log('[TTS] 音频数据下载成功，大小:', arrayBuffer.byteLength);
-        
+
         const audioCtx = initAudio();
-        if (!audioCtx) {
-            console.log('[TTS] 无 AudioContext，降级到 audio 元素');
-            return playWithAudioElement(ttsUrl);
-        }
-        
+        if (!audioCtx) return false;
+
         const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
         console.log('[TTS] 解码成功，时长:', audioBuffer.duration.toFixed(2), '秒');
-        
+
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         const gainNode = audioCtx.createGain();
@@ -1732,16 +1764,15 @@ async function speakWithBaidu(text) {
         source.connect(gainNode);
         gainNode.connect(audioCtx.destination);
         source.start(0);
-        
+
         await new Promise(resolve => {
             source.onended = resolve;
         });
-        
+
         return true;
     } catch (e) {
-        console.log('[TTS] Web Audio 方式失败:', e.message, '→ 降级到 audio 元素');
-        // 策略2：降级到 <audio> 元素播放（兼容性最好，手机浏览器都支持）
-        return playWithAudioElement(ttsUrl);
+        console.log('[TTS] Web Audio 方式失败:', e.message);
+        return false;
     }
 }
 
@@ -1751,14 +1782,14 @@ function playWithAudioElement(url) {
         try {
             const audio = new Audio();
             audio.preload = 'auto';
-            
+
             const timeoutId = setTimeout(() => {
                 console.log('[TTS] audio 元素超时');
                 audio.pause();
                 audio.src = '';
                 resolve(false);
-            }, 12000);
-            
+            }, 10000);
+
             audio.oncanplaythrough = () => {
                 console.log('[TTS] audio 元素可以播放');
                 audio.play().then(() => {
@@ -1768,19 +1799,19 @@ function playWithAudioElement(url) {
                     resolve(false);
                 });
             };
-            
+
             audio.onended = () => {
                 clearTimeout(timeoutId);
                 console.log('[TTS] audio 元素播放完毕');
                 resolve(true);
             };
-            
+
             audio.onerror = (e) => {
                 clearTimeout(timeoutId);
                 console.log('[TTS] audio 元素加载失败');
                 resolve(false);
             };
-            
+
             audio.src = url;
         } catch (e) {
             console.log('[TTS] audio 元素创建失败:', e.message);
