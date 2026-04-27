@@ -1820,6 +1820,45 @@ function playWithAudioElement(url) {
     });
 }
 
+// 判断是否为移动端
+function isMobile() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        || (navigator.maxTouchPoints > 1);
+}
+
+// 用浏览器自带 speechSynthesis 播报（无需网络，兼容性好）
+function speakWithBrowser(text) {
+    return new Promise((resolve) => {
+        if (!window.speechSynthesis || typeof window.speechSynthesis.speak !== 'function') {
+            console.log('[TTS] speechSynthesis 不可用');
+            resolve(false);
+            return;
+        }
+        try {
+            window.speechSynthesis.cancel();
+            const utt = new SpeechSynthesisUtterance(text);
+            utt.lang = "zh-CN";
+            utt.rate = 1.05;
+            utt.pitch = 1;
+
+            utt.onend = () => { resolve(true); };
+            utt.onerror = (e) => {
+                console.log('[TTS] speechSynthesis 错误:', e);
+                resolve(false);
+            };
+
+            // 某些浏览器 speechSynthesis 长时间不用会"休眠"，cancel+小延时唤醒
+            window.speechSynthesis.cancel();
+            setTimeout(() => {
+                window.speechSynthesis.speak(utt);
+            }, 50);
+        } catch (e) {
+            console.log('[TTS] speechSynthesis 异常:', e);
+            resolve(false);
+        }
+    });
+}
+
 // 语音播报
 async function speak(text) {
     // 始终更新界面文字（无论能否播音，视障用户的辅助技术也能读到）
@@ -1828,24 +1867,22 @@ async function speak(text) {
     
     if (!state.voiceEnabled) return;
     
-    // 先尝试百度语音合成
+    // 移动端优先用系统语音合成（不依赖网络，不受CORS限制）
+    if (isMobile()) {
+        console.log('[TTS] 移动端 → 优先 speechSynthesis');
+        const browserSuccess = await speakWithBrowser(text);
+        if (browserSuccess) return;
+        // 系统语音失败再尝试百度TTS
+        console.log('[TTS] speechSynthesis 失败，尝试百度TTS');
+    }
+    
+    // 电脑端（或移动端降级）：百度语音合成
     const baiduSuccess = await speakWithBaidu(text);
     if (baiduSuccess) return;
     
-    // 百度失败 → 尝试浏览器自带语音合成
-    // 微信 WebView 里 speechSynthesis 基本不可用，检查后再调用
-    if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
-        try {
-            window.speechSynthesis.cancel();
-            const utt = new SpeechSynthesisUtterance(text);
-            utt.lang = "zh-CN"; 
-            utt.rate = 1.05; 
-            utt.pitch = 1;
-            window.speechSynthesis.speak(utt);
-        } catch (e) {
-            console.log('浏览器语音合成失败:', e);
-        }
-    }
+    // 百度也失败 → 最后兜底用系统语音
+    console.log('[TTS] 百度TTS失败，降级 speechSynthesis');
+    await speakWithBrowser(text);
 }
 
 function speakCurrentStep() {
