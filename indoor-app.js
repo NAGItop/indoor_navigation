@@ -1381,11 +1381,281 @@ function updateVoiceStatus(status) {
     }
 }
 
-// ── 解析语音指令并执行 ──
+// ============================================
+// AI 智能意图理解模块
+// ============================================
+
+// 多轮对话历史（最多保留最近6轮，防止 token 超限）
+const conversationHistory = [];
+const MAX_HISTORY_ROUNDS = 6;
+
+// AI 配置（智谱AI，通过自建 Cloudflare Worker 代理）
+// 部署 Worker 后把地址填到这里（步骤见 ai-proxy-worker.js 文件头部注释）
+const AI_PROXY_URL = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev';
+const AI_TIMEOUT = 12000; // 12秒超时
+
+// 当前导航状态（用于构建 AI context）
+function getNavContext() {
+    const startSel = document.getElementById('startSelect');
+    const endSel = document.getElementById('endSelect');
+    const startRoom = startSel?.value ? ALL_ROOMS.find(r => r.id === startSel.value) : null;
+    const endRoom = endSel?.value ? ALL_ROOMS.find(r => r.id === endSel.value) : null;
+    return {
+        currentFloor: state.viewFloor,
+        startSet: !!startRoom,
+        startName: startRoom?.name || null,
+        endSet: !!endRoom,
+        endName: endRoom?.name || null,
+        hasRoute: state.pathSegments.length > 0,
+        navigating: state.pathSteps.length > 0,
+    };
+}
+
+// 构建房间列表文本（给 AI 的上下文）
+function buildRoomListText() {
+    const lines = [];
+    for (let f = 1; f <= 3; f++) {
+        const rooms = ALL_ROOMS.filter(r => r.floor === f);
+        lines.push(`第${f}层: ${rooms.map(r => r.id + '(' + r.name.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '') + ')').join(', ')}`);
+    }
+    return lines.join('\n');
+}
+
+// 构建系统提示词
+function buildSystemPrompt() {
+    const navCtx = getNavContext();
+    const roomList = buildRoomListText();
+
+    return `你是一个室内导航系统的AI语音助手，专门帮助视障人士在教学楼内导航。
+
+## 你的职责
+1. 理解用户的自然语言指令，判断意图类型
+2. 将模糊的表达转化为精确的导航指令
+3. 支持多轮对话上下文理解（用户可能分两句话说起点和终点）
+4. 识别用户的无障碍求助、闲聊等非导航意图，给出温暖回应
+
+## 教学楼房间列表（房间ID: 名称）
+${roomList}
+
+## 当前导航状态
+- 当前楼层：第${navCtx.currentFloor}层
+- 起点：${navCtx.startSet ? '已设为 ' + navCtx.startName : '未设置'}
+- 终点：${navCtx.endSet ? '已设为 ' + navCtx.endName : '未设置'}
+- 是否有路线：${navCtx.hasRoute ? '是' : '否'}
+- 是否在导航中：${navCtx.navigating ? '是' : '否'}
+
+## 回复格式（必须严格返回 JSON）
+{
+  "intent": "navigate|control|help|chat|switch_floor",
+  "action": "set_start|set_end|plan|next_step|prev_step|clear|switch_floor|reply|none",
+  "target_room_id": "房间ID，如 r1_101（仅 navigate 意图需要）",
+  "target_floor": 楼层数字（仅 switch_floor 需要）,
+  "reply": "给用户的语音回复文字，简洁友好，一句话",
+  "auto_plan": true/false（设置完起点终点后是否自动规划）
+}
+
+## 意图说明
+- navigate: 用户想导航到某处。action=set_start(设起点) / set_end(设终点)
+- control: 导航控制。action=plan(开始规划) / next_step / prev_step / clear(清除路线)
+- switch_floor: 切换楼层。action=switch_floor
+- help: 用户遇到困难或求助（"我迷路了""看不清""帮帮我"），给予安抚和指引
+- chat: 闲聊或询问（"几点了""谢谢"），简短回应
+- none: 无法理解，让用户重新说
+
+## 重要规则
+1. "厕所""卫生间""洗手间""WC" 都对应卫生间，每层一个
+2. 如果用户只说了一个地点且没有明确说"从...出发"，优先设为终点
+3. 如果上下文中已有起点，新说的地点自动设为终点
+4. 回复必须简洁，因为会通过语音播报，不要太长
+5. 只返回 JSON，不要返回其他内容`;
+}
+
+// 调用 AI 获取意图（通过自建 Cloudflare Worker 代理）
+async function callAI(userText) {
+    try {
+        // 构建消息列表（系统提示 + 历史对话 + 当前输入）
+        const messages = [
+            { role: 'system', content: buildSystemPrompt() },
+        ];
+
+        // 添加历史对话（最近6轮）
+        for (const msg of conversationHistory) {
+            messages.push(msg);
+        }
+
+        // 当前用户输入
+        messages.push({ role: 'user', content: userText });
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), AI_TIMEOUT);
+
+        const response = await fetch(AI_PROXY_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                messages,
+                temperature: 0.3,
+                max_tokens: 300,
+            }),
+            signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            throw new Error(`HTTP ${response.status}: ${errText.substring(0, 200)}`);
+        }
+
+        const data = await response.json();
+
+        if (!data.success || !data.reply) {
+            throw new Error(data.error || 'AI 返回数据异常');
+        }
+
+        // 记录到对话历史
+        conversationHistory.push({ role: 'user', content: userText });
+        conversationHistory.push({ role: 'assistant', content: data.reply });
+
+        // 限制历史长度
+        while (conversationHistory.length > MAX_HISTORY_ROUNDS * 2) {
+            conversationHistory.shift();
+            conversationHistory.shift();
+        }
+
+        return data.reply;
+
+    } catch (err) {
+        console.log('[AI] 调用失败:', err.message);
+        return null; // 返回 null，降级到关键词匹配
+    }
+}
+
+// 解析 AI 返回的 JSON
+function parseAIResponse(replyText) {
+    try {
+        // 提取 JSON（可能被包裹在 markdown 代码块中）
+        let jsonStr = replyText.trim();
+        const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (codeBlockMatch) {
+            jsonStr = codeBlockMatch[1].trim();
+        }
+        // 找到第一个 { 和最后一个 }
+        const firstBrace = jsonStr.indexOf('{');
+        const lastBrace = jsonStr.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+        }
+
+        const result = JSON.parse(jsonStr);
+        return {
+            intent: result.intent || 'none',
+            action: result.action || 'none',
+            targetRoomId: result.target_room_id || null,
+            targetFloor: result.target_floor || null,
+            reply: result.reply || '',
+            autoPlan: result.auto_plan === true,
+        };
+    } catch (e) {
+        console.log('[AI] JSON 解析失败:', e.message, '原文:', replyText);
+        return null;
+    }
+}
+
+// 根据 AI 解析结果执行操作
+function executeAIIntent(parsed) {
+    if (!parsed) return false;
+
+    switch (parsed.action) {
+        case 'set_start':
+        case 'set_end': {
+            if (!parsed.targetRoomId) return false;
+            const room = ALL_ROOMS.find(r => r.id === parsed.targetRoomId);
+            if (!room) return false;
+
+            const selectId = parsed.action === 'set_start' ? 'startSelect' : 'endSelect';
+            const select = document.getElementById(selectId);
+            if (select) select.value = room.id;
+
+            const label = parsed.action === 'set_start' ? '起点' : '终点';
+            showResult(`已设置${label}：${room.name}`, 'success');
+            playSuccessSound();
+            hapticFeedback('success');
+
+            // 自动规划
+            if (parsed.autoPlan) {
+                const startSel = document.getElementById('startSelect');
+                const endSel = document.getElementById('endSelect');
+                if (startSel?.value && endSel?.value) {
+                    setTimeout(() => {
+                        const planBtn = document.getElementById('planBtn');
+                        if (planBtn) planBtn.click();
+                    }, 1500);
+                }
+            }
+            return true;
+        }
+        case 'plan': {
+            const planBtn = document.getElementById('planBtn');
+            if (planBtn) planBtn.click();
+            return true;
+        }
+        case 'next_step': {
+            const nextBtn = document.getElementById('nextStep');
+            if (nextBtn && !nextBtn.disabled) nextBtn.click();
+            return true;
+        }
+        case 'prev_step': {
+            const prevBtn = document.getElementById('prevStep');
+            if (prevBtn && !prevBtn.disabled) prevBtn.click();
+            return true;
+        }
+        case 'clear': {
+            const clearBtn = document.getElementById('clearBtn');
+            if (clearBtn) {
+                clearBtn.click();
+                speak('已清除路线');
+            }
+            return true;
+        }
+        case 'switch_floor': {
+            if (parsed.targetFloor && parsed.targetFloor >= 1 && parsed.targetFloor <= 3) {
+                switchToFloor(parsed.targetFloor);
+            }
+            return true;
+        }
+        case 'reply':
+            return true; // 纯语音回复，不需要执行操作
+        default:
+            return false;
+    }
+}
+
+// ── 解析语音指令并执行（AI 优先 + 关键词降级） ──
 async function processVoiceCommand(text) {
     console.log('[语音指令] 原始文本:', text);
 
-    // 判断是设置位置还是控制指令
+    // ===== 第一优先：AI 智能理解 =====
+    speak('正在思考');
+    const aiReply = await callAI(text);
+
+    if (aiReply) {
+        console.log('[AI] 回复:', aiReply);
+        const parsed = parseAIResponse(aiReply);
+
+        if (parsed && parsed.reply) {
+            // 先执行操作（如设起点/终点），再语音播报
+            const executed = executeAIIntent(parsed);
+            // 如果 AI 没有帮我们播报（比如 plan/clear 等操作会触发自身的 speak），则播报 AI 的回复
+            if (!executed || parsed.intent === 'chat' || parsed.intent === 'help' || parsed.intent === 'none') {
+                speak(parsed.reply);
+            }
+            return;
+        }
+    }
+
+    // ===== 第二优先：关键词匹配降级 =====
+    console.log('[语音指令] AI 不可用，降级到关键词匹配');
     const startKeywords = ['从', '起点', '出发', '从这里'];
     const endKeywords = ['去', '到', '导航', '终点', '前往', '目标'];
     const controlKeywords = ['开始', '规划', '下一步', '上一步', '清除', '重新', '看', '切', '切换'];
@@ -1437,54 +1707,52 @@ async function processVoiceCommand(text) {
         }
     }
 
-    // 位置匹配
-    const matchedRoom = matchRoomByText(text);
-    if (matchedRoom) {
-        // 智能判断设置起点还是终点
-        let selectId;
-        if (hasStart) {
-            selectId = 'startSelect';
-        } else if (hasEnd) {
-            selectId = 'endSelect';
-        } else {
-            // 没有明确关键词：如果起点已设，自动设终点；否则设起点
-            const startSelect = document.getElementById('startSelect');
-            const endSelect = document.getElementById('endSelect');
-            const startSet = startSelect && startSelect.value;
-            const endSet = endSelect && endSelect.value;
-
-            if (!startSet) {
+    // 位置匹配（原有的 matchRoomByText 逻辑）
+    if (typeof matchRoomByText === 'function') {
+        const matchedRoom = matchRoomByText(text);
+        if (matchedRoom) {
+            let selectId;
+            if (hasStart) {
                 selectId = 'startSelect';
-            } else if (!endSet) {
+            } else if (hasEnd) {
                 selectId = 'endSelect';
             } else {
-                // 两个都设了，替换终点
-                selectId = 'endSelect';
+                const startSelect = document.getElementById('startSelect');
+                const endSelect = document.getElementById('endSelect');
+                const startSet = startSelect && startSelect.value;
+                const endSet = endSelect && endSelect.value;
+                if (!startSet) {
+                    selectId = 'startSelect';
+                } else if (!endSet) {
+                    selectId = 'endSelect';
+                } else {
+                    selectId = 'endSelect';
+                }
             }
+
+            const select = document.getElementById(selectId);
+            if (select) select.value = matchedRoom.id;
+
+            const label = selectId === 'startSelect' ? '起点' : '终点';
+            showResult(`已设置${label}：${matchedRoom.name}`, 'success');
+            speak(`已设置${label}：${matchedRoom.name}`);
+            playSuccessSound();
+            hapticFeedback('success');
+
+            const startSel = document.getElementById('startSelect');
+            const endSel = document.getElementById('endSelect');
+            if (startSel?.value && endSel?.value) {
+                setTimeout(() => {
+                    const planBtn = document.getElementById('planBtn');
+                    if (planBtn) planBtn.click();
+                }, 1500);
+            }
+            return;
         }
-
-        const select = document.getElementById(selectId);
-        if (select) select.value = matchedRoom.id;
-
-        const label = selectId === 'startSelect' ? '起点' : '终点';
-        showResult(`已设置${label}：${matchedRoom.name}`, 'success');
-        speak(`已设置${label}：${matchedRoom.name}`);
-        playSuccessSound();
-        hapticFeedback('success');
-
-        // 如果起点和终点都设了，自动规划
-        const startSel = document.getElementById('startSelect');
-        const endSel = document.getElementById('endSelect');
-        if (startSel?.value && endSel?.value) {
-            setTimeout(() => {
-                const planBtn = document.getElementById('planBtn');
-                if (planBtn) planBtn.click();
-            }, 1500);
-        }
-    } else if (!hasControl) {
-        // 没有匹配到有效指令
-        console.log('[语音指令] 未匹配到有效指令:', text);
     }
+
+    // 都没匹配到
+    speak('抱歉，我没有听懂，请再说一次');
 }
 
 // 调用百度短语音识别 API
