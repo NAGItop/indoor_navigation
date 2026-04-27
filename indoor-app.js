@@ -584,19 +584,34 @@ function initCanvas() {
 
 function resizeCanvas() {
     const cont = state.canvas.parentElement;
-    state.canvas.width  = cont.clientWidth;
-    state.canvas.height = cont.clientHeight;
+    const dpr  = window.devicePixelRatio || 1;
+    const cssW = cont.clientWidth;
+    const cssH = cont.clientHeight;
+    // 物理像素 = CSS像素 × DPR，解决高清屏模糊问题
+    state.canvas.width  = cssW * dpr;
+    state.canvas.height = cssH * dpr;
+    // CSS 尺寸保持不变，让布局正常
+    state.canvas.style.width  = cssW + "px";
+    state.canvas.style.height = cssH + "px";
+    // 缩放上下文，后续所有绘制仍以 CSS 像素为单位
+    state.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // 保存 CSS 尺寸供布局计算使用
+    state.cssWidth  = cssW;
+    state.cssHeight = cssH;
     fitView();
 }
 
 function fitView() {
     const mapW = COLS * MAP_CONFIG.cellSize;
     const mapH = ROWS * MAP_CONFIG.cellSize;
-    const sx = state.canvas.width  / mapW;
-    const sy = state.canvas.height / mapH;
+    // 使用 CSS 尺寸（ctx 已 scale(dpr) 处理），保证布局正确
+    const w = state.cssWidth  || state.canvas.width;
+    const h = state.cssHeight || state.canvas.height;
+    const sx = w / mapW;
+    const sy = h / mapH;
     state.scale   = Math.min(sx, sy) * 0.92;
-    state.offsetX = (state.canvas.width  - mapW * state.scale) / 2;
-    state.offsetY = (state.canvas.height - mapH * state.scale) / 2;
+    state.offsetX = (w - mapW * state.scale) / 2;
+    state.offsetY = (h - mapH * state.scale) / 2;
 }
 
 function startLoop() {
@@ -642,8 +657,10 @@ function render() {
     const floorMap = FLOOR_MAPS[floor];
 
     // 背景（墙色）
+    const canvasW = state.cssWidth  || state.canvas.width;
+    const canvasH = state.cssHeight || state.canvas.height;
     ctx.fillStyle = MAP_CONFIG.wallColor;
-    ctx.fillRect(0, 0, state.canvas.width, state.canvas.height);
+    ctx.fillRect(0, 0, canvasW, canvasH);
 
     // 绘制格子
     for (let r = 0; r < ROWS; r++) {
@@ -777,7 +794,7 @@ function drawFloorIndicator(ctx, floor) {
     ctx.fillStyle = "rgba(255,255,255,0.5)";
     ctx.textAlign  = "right";
     ctx.textBaseline = "top";
-    ctx.fillText(`当前显示：第 ${floor} 层`, state.canvas.width - 12, 12);
+    ctx.fillText(`当前显示：第 ${floor} 层`, (state.cssWidth || state.canvas.width) - 12, 12);
     ctx.restore();
 }
 
