@@ -1152,11 +1152,11 @@ const BAIDU_ASR_SAMPLE_RATE = 16000;
 const BAIDU_ASR_CUID = '7664376';
 
 // 监听参数
-const VOICE_THRESHOLD = 15;        // 音量阈值（0-100），环境安静时 10-20 足够
-const SILENCE_DURATION = 1500;     // 静音多久后停止录音（ms）
-const MAX_RECORD_DURATION = 8000;  // 最大单次录音时长（ms）
-const COOLDOWN_DURATION = 2000;    // 两次识别之间的最小间隔（ms）
-const MIN_RECORD_DURATION = 500;   // 最短录音时长（ms），过滤掉短噪音
+const VOICE_THRESHOLD = 8;         // 音量阈值（0-100），降低阈值更容易触发
+const SILENCE_DURATION = 2000;     // 静音多久后停止录音（ms），加长容许说话停顿
+const MAX_RECORD_DURATION = 10000; // 最大单次录音时长（ms）
+const COOLDOWN_DURATION = 2500;    // 两次识别之间的最小间隔（ms）
+const MIN_RECORD_DURATION = 300;   // 最短录音时长（ms），降低门槛减少误丢弃
 
 // 检查是否支持
 function isSpeechRecognitionSupported() {
