@@ -1274,6 +1274,7 @@ async function startRecording() {
             ? new MediaRecorder(stream, { mimeType })
             : new MediaRecorder(stream);
 
+        const _recMimeType = mediaRecorder.mimeType || mimeType || 'audio/webm'; // 闭包保存
         mediaRecorder.ondataavailable = (e) => {
             if (e.data.size > 0) audioChunks.push(e.data);
         };
@@ -1300,8 +1301,8 @@ async function startRecording() {
             updateVoiceStatus('processing');
 
             try {
-                const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-                const recognizedText = await recognizeWithBaidu(audioBlob, mediaRecorder.mimeType);
+                const audioBlob = new Blob(audioChunks, { type: _recMimeType });
+                const recognizedText = await recognizeWithBaidu(audioBlob, _recMimeType);
                 console.log('[语音识别] 结果:', recognizedText);
 
                 if (recognizedText) {
@@ -1631,9 +1632,61 @@ function executeAIIntent(parsed) {
     }
 }
 
+// ============================================
+// 模糊匹配房间（用于 AI 不可用时的关键词降级）
+// ============================================
+function matchRoomByText(text) {
+    if (!text || typeof text !== 'string') return null;
+    const t = text.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').toLowerCase();
+
+    // 1. 精确匹配房间 ID（r1_101 / 101）
+    for (const r of ALL_ROOMS) {
+        if (r.id.toLowerCase() === t) return r;
+        // r1_101 → 匹配 "101"
+        const num = r.id.match(/\d+/)?.[0];
+        if (num && t.includes(num)) return r;
+    }
+
+    // 2. 名称关键词匹配（去掉 emoji）
+    const synonyms = {
+        '卫生间': ['厕所', '洗手间', 'wc', '马桶间'],
+        '办公室': ['教务', '系所', '导师'],
+        '教室': ['教室', '课堂', '课室'],
+        '实验室': ['实验室', '理化'],
+        '计算机室': ['计算机', '电脑室', '机房'],
+    };
+
+    let best = null, bestScore = 0;
+    for (const r of ALL_ROOMS) {
+        const name = r.name.replace(/[\u{1F000}-\u{1FFFF}]/gu, '').replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '');
+        let score = 0;
+
+        // 直接包含名称关键词
+        if (t.includes(name.toLowerCase()) || name.toLowerCase().includes(t)) score = 3;
+
+        // 同义词匹配
+        for (const [canon, syns] of Object.entries(synonyms)) {
+            if (name.includes(canon) && syns.some(s => t.includes(s))) { score = Math.max(score, 2); }
+        }
+
+        // 楼层 + 类型匹配（如"一楼教室"）
+        if (t.includes(`${r.floor}`) && name.length > 0) score = Math.max(score, 1);
+
+        if (score > bestScore) { bestScore = score; best = r; }
+    }
+
+    return bestScore > 0 ? best : null;
+}
+
 // ── 解析语音指令并执行（AI 优先 + 关键词降级） ──
 async function processVoiceCommand(text) {
     console.log('[语音指令] 原始文本:', text);
+
+    // 显示识别结果到语音面板
+    const resultEl = document.querySelector('#voicePanel .voice-text');
+    if (resultEl) {
+        resultEl.textContent = '识别到：' + (text || '（无内容）');
+    }
 
     // ===== 第一优先：AI 智能理解 =====
     speak('正在思考');
@@ -1757,13 +1810,7 @@ async function processVoiceCommand(text) {
 
 // 调用百度短语音识别 API
 async function recognizeWithBaidu(audioBlob, mimeType) {
-    const token = await getBaiduAccessToken();
-    if (!token) {
-        throw new Error('无法获取百度 access token');
-    }
-
     // 百度 API 要求的音频格式：pcm（不带头）或 wav（带标准头）
-    // MediaRecorder 输出通常是 webm/opus，需要转换为 PCM
     const pcmData = await audioBlobToPCM(audioBlob);
     console.log('[语音识别] PCM 数据大小:', pcmData.byteLength, '字节');
 
@@ -1774,22 +1821,16 @@ async function recognizeWithBaidu(audioBlob, mimeType) {
     // 转为 base64
     const base64Audio = arrayBufferToBase64(pcmData);
 
-    // 构建请求参数
-    const params = new URLSearchParams({
-        format: 'pcm',
-        rate: String(BAIDU_ASR_SAMPLE_RATE),
-        channel: '1',
-        token: token,
-        cuid: BAIDU_ASR_CUID,
-        len: String(pcmData.byteLength),
-        dev_pid: '1537', // 普通话（有标点，支持搜索模型）
-        speech: base64Audio
-    });
+    // 通过 Worker 代理调用百度 ASR（绕过 CORS）
+    const WORKER_URL = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-asr';
 
-    const response = await fetch('https://vop.baidu.com/server_api', {
+    const response = await fetch(WORKER_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params.toString()
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            speech: base64Audio,
+            len: pcmData.byteLength,
+        }),
     });
 
     const data = await response.json();

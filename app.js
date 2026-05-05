@@ -792,11 +792,14 @@ function planRoute(start, end) {
                 updateMapStatus("ready");
                 showStatus(`路线规划完成，全程约 ${distance}`, "success");
                 hapticFeedback("success");
+                // 语音播报路线结果
+                speakText(`路线规划完成，从${start}出发，前往${end}，全程约${distance}，预计用时${duration}，请注意沿途指引。`);
             } else {
                 updateRouteStatus("规划失败", "无法找到可行路线，请检查地址");
                 updateMapStatus("error");
                 showStatus("路线规划失败，请检查地址是否正确", "error");
                 hapticFeedback("error");
+                speakText("路线规划失败，请检查起点和终点地址是否正确。");
             }
         });
     });
@@ -1025,6 +1028,371 @@ function bindEvents() {
 }
 
 // ============================================
+// 室外语音输入模块
+// ============================================
+const _OV = {
+    THRESHOLD: 8,        // 音量触发阈值
+    SILENCE: 2000,       // 静音多久停录（ms）
+    MAX_REC: 10000,      // 最长单次录音（ms）
+    COOLDOWN: 2500,      // 两次识别最小间隔（ms）
+    MIN_REC: 300,        // 最短录音（ms）
+    RATE: 16000,         // 采样率
+    CUID: '7664376',     // 百度ASR CUID
+    PROXY: 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev',
+};
+
+let _ovListening = false, _ovRecording = false;
+let _ovMediaRec = null, _ovChunks = [];
+let _ovStream = null, _ovAnalyser = null;
+let _ovSilTimer = null, _ovRecTimer = null;
+let _ovCooldown = false, _ovInited = false;
+const _ovHistory = [];   // AI 多轮对话历史
+
+// 检查浏览器支持
+function _ovSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+// ── 启动持续监听 ──
+async function initOutdoorVoice() {
+    if (_ovInited || !_ovSupported()) return;
+    _ovInited = true;
+    try {
+        _ovStream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, sampleRate: _OV.RATE, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        _ensureAudioCtx();
+        const src = _appAudioCtx.createMediaStreamSource(_ovStream);
+        _ovAnalyser = _appAudioCtx.createAnalyser();
+        _ovAnalyser.fftSize = 512;
+        _ovAnalyser.smoothingTimeConstant = 0.5;
+        src.connect(_ovAnalyser);
+        _ovListening = true;
+        _ovUpdateStatus('listening');
+        _ovMonitor();
+        console.log('[室外语音] 持续监听已启动');
+    } catch (e) {
+        _ovInited = false;
+        if (e.name === 'NotAllowedError') showStatus('请允许麦克风权限以使用语音控制', 'error');
+        else console.log('[室外语音] 初始化失败:', e.message);
+    }
+}
+
+// ── 音量检测循环 ──
+function _ovMonitor() {
+    if (!_ovListening || !_ovAnalyser) return;
+    const buf = new Uint8Array(_ovAnalyser.frequencyBinCount);
+    _ovAnalyser.getByteFrequencyData(buf);
+    const vol = buf.reduce((s, v) => s + v, 0) / buf.length;
+
+    if (_ovRecording) {
+        if (vol < _OV.THRESHOLD) {
+            if (!_ovSilTimer) _ovSilTimer = setTimeout(_ovStopRec, _OV.SILENCE);
+        } else {
+            if (_ovSilTimer) { clearTimeout(_ovSilTimer); _ovSilTimer = null; }
+        }
+    } else if (!_ovCooldown && vol > _OV.THRESHOLD) {
+        _ovStartRec();
+    }
+    requestAnimationFrame(_ovMonitor);
+}
+
+// ── 开始录音 ──
+async function _ovStartRec() {
+    if (_ovRecording || _ovCooldown) return;
+    _ovRecording = true;
+    _ovChunks = [];
+    _ovUpdateStatus('recording');
+    _ovBeep();
+    const t0 = Date.now();
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { channelCount: 1, sampleRate: _OV.RATE, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        let mime = 'audio/webm;codecs=pcm';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'audio/webm';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'audio/mp4';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = '';
+
+        _ovMediaRec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+        const _recMimeType = _ovMediaRec.mimeType || mime || 'audio/webm'; // 闭包保存，防止被清空后读取
+        _ovMediaRec.ondataavailable = e => { if (e.data.size > 0) _ovChunks.push(e.data); };
+        _ovMediaRec.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            const dur = Date.now() - t0;
+            if (dur < _OV.MIN_REC || !_ovChunks.length) {
+                _ovRecording = false; _ovUpdateStatus('listening'); return;
+            }
+            _ovUpdateStatus('processing');
+            try {
+                const blob = new Blob(_ovChunks, { type: _recMimeType });
+                const text = await _ovRecognize(blob);
+                console.log('[室外语音识别]', text);
+                if (text) await _ovProcessCmd(text);
+            } catch (e) {
+                console.log('[室外语音] 识别失败:', e.message);
+            }
+            _ovRecording = false;
+            _ovCooldown = true;
+            _ovUpdateStatus('listening');
+            setTimeout(() => { _ovCooldown = false; }, _OV.COOLDOWN);
+        };
+        _ovMediaRec.onerror = () => { stream.getTracks().forEach(t => t.stop()); _ovRecording = false; _ovUpdateStatus('listening'); };
+        _ovRecTimer = setTimeout(_ovStopRec, _OV.MAX_REC);
+        _ovMediaRec.start(200);
+    } catch (e) {
+        _ovRecording = false; _ovUpdateStatus('listening');
+    }
+}
+
+// ── 停止录音 ──
+function _ovStopRec() {
+    if (_ovSilTimer) { clearTimeout(_ovSilTimer); _ovSilTimer = null; }
+    if (_ovRecTimer) { clearTimeout(_ovRecTimer); _ovRecTimer = null; }
+    if (_ovMediaRec && _ovMediaRec.state !== 'inactive') try { _ovMediaRec.stop(); } catch (e) {}
+    _ovMediaRec = null;
+}
+
+// ── 更新语音状态面板 ──
+function _ovUpdateStatus(status) {
+    const panel = document.getElementById('outdoorVoicePanel');
+    const text = document.getElementById('outdoorVoiceText');
+    if (!panel) return;
+    panel.className = 'outdoor-voice-panel voice-' + status;
+    if (text) {
+        const msgs = {
+            idle: '点击页面任意位置启用语音控制',
+            listening: '🟢 语音监听中，直接说话即可',
+            recording: '🔴 正在聆听您说的话...',
+            processing: '🔵 正在识别语音...',
+        };
+        text.textContent = msgs[status] || msgs.listening;
+    }
+}
+
+// ── 百度ASR识别（通过 Worker 代理，无 CORS 问题） ──
+async function _ovRecognize(blob) {
+    // 将 blob 转 PCM 再转 base64
+    const pcm = await _ovBlobToPCM(blob);
+    if (pcm.byteLength < 100) throw new Error('音频太短');
+    const b64 = _ovBuf2Base64(pcm);
+
+    const WORKER_URL = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-asr';
+
+    const res = await fetch(WORKER_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            speech: b64,
+            len: pcm.byteLength,
+        }),
+    });
+
+    const data = await res.json();
+    if (data.err_no === 0 && data.result?.length) return data.result[0];
+    throw new Error('百度ASR错误: ' + (data.err_msg || data.err_no));
+}
+
+// ── Blob 转 16kHz 单声道 PCM ──
+async function _ovBlobToPCM(blob) {
+    const ab = await blob.arrayBuffer();
+    _ensureAudioCtx();
+    const decoded = await _appAudioCtx.decodeAudioData(ab);
+    const len = Math.round(decoded.duration * _OV.RATE);
+    const offCtx = new OfflineAudioContext(1, len, _OV.RATE);
+    const src = offCtx.createBufferSource();
+    src.buffer = decoded; src.connect(offCtx.destination); src.start(0);
+    const rendered = await offCtx.startRendering();
+    const ch = rendered.getChannelData(0);
+    const pcm = new Int16Array(ch.length);
+    for (let i = 0; i < ch.length; i++) {
+        const s = Math.max(-1, Math.min(1, ch[i]));
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return pcm.buffer;
+}
+
+// ── ArrayBuffer 转 Base64 ──
+function _ovBuf2Base64(buf) {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode(...bytes.subarray(i, Math.min(i + 8192, bytes.length)));
+    }
+    return btoa(bin);
+}
+
+// ── 处理语音指令（AI 优先，关键词降级） ──
+async function _ovProcessCmd(text) {
+    // 显示识别结果到面板
+    const resultEl = document.getElementById('outdoorVoiceResult');
+    if (resultEl) { resultEl.textContent = text || '（未识别到内容）'; resultEl.style.display = 'inline'; }
+    speakText('正在理解');
+
+    // AI 意图理解
+    const aiReply = await _ovCallAI(text);
+    if (aiReply) {
+        const parsed = _ovParseAI(aiReply);
+        if (parsed) {
+            _ovExecIntent(parsed);
+            if (parsed.reply) speakText(parsed.reply);
+            return;
+        }
+    }
+
+    // 降级：关键词匹配
+    const startEl = document.getElementById('startPoint');
+    const endEl   = document.getElementById('endPoint');
+
+    if (/开始|规划|导航/.test(text)) {
+        const form = document.getElementById('routeForm');
+        if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        speakText('开始规划路线');
+        return;
+    }
+    if (/定位|我在哪/.test(text)) {
+        document.getElementById('locateBtn')?.click();
+        speakText('正在定位当前位置');
+        return;
+    }
+    if (/清除|重新|取消/.test(text)) {
+        if (startEl) startEl.value = '';
+        if (endEl) endEl.value = '';
+        speakText('已清除起点和终点');
+        return;
+    }
+    if (/紧急|救命|帮我|求救/.test(text)) {
+        showEmergencyModal();
+        speakText('已打开紧急呼叫，请确认后拨打');
+        return;
+    }
+
+    // 尝试当作地点
+    const hasSrc = /从|出发|起点/.test(text);
+    if (hasSrc) {
+        // 提取地名（去掉前缀关键词）
+        const loc = text.replace(/从|出发|起点|我在/g, '').trim() || text;
+        if (startEl) { startEl.value = loc; showStatus(`起点：${loc}`, 'success'); speakText(`已设置起点：${loc}`); }
+    } else {
+        const loc = text.replace(/去|到|前往|导航到|终点/g, '').trim() || text;
+        if (endEl) { endEl.value = loc; showStatus(`终点：${loc}`, 'success'); speakText(`已设置目的地：${loc}`); }
+    }
+}
+
+// ── 调用智谱AI（室外版提示词） ──
+async function _ovCallAI(userText) {
+    try {
+        const startVal = document.getElementById('startPoint')?.value || '未设置';
+        const endVal   = document.getElementById('endPoint')?.value || '未设置';
+        const system = `你是室外导航语音助手，帮助视障人士设置城市出行路线。
+当前起点:${startVal}，终点:${endVal}。
+理解用户指令，严格返回JSON（不含其他内容）：
+{"intent":"navigate|control|emergency|chat","action":"set_start|set_end|plan|clear|locate|emergency|reply","location":"地点名称(仅navigate意图填写)","reply":"简短语音回复，一句话"}
+规则：
+1. "去X/到X/前往X" → intent=navigate, action=set_end, location=X
+2. "从X出发/起点是X" → intent=navigate, action=set_start, location=X
+3. "开始/规划/导航" → action=plan
+4. "定位/我在哪" → action=locate
+5. "清除/重新" → action=clear
+6. "紧急/救命" → action=emergency
+7. reply必须简洁，会被语音播报`;
+
+        const messages = [
+            { role: 'system', content: system },
+            ..._ovHistory,
+            { role: 'user', content: userText }
+        ];
+
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 12000);
+        const res = await fetch(_OV.PROXY, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages, temperature: 0.2, max_tokens: 200 }),
+            signal: ctrl.signal
+        });
+        clearTimeout(tid);
+
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data.success || !data.reply) return null;
+
+        _ovHistory.push({ role: 'user', content: userText }, { role: 'assistant', content: data.reply });
+        while (_ovHistory.length > 12) _ovHistory.shift();
+        return data.reply;
+    } catch (e) {
+        return null;
+    }
+}
+
+// ── 解析AI回复 ──
+function _ovParseAI(txt) {
+    try {
+        let s = txt.trim();
+        const m = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (m) s = m[1].trim();
+        const f = s.indexOf('{'), l = s.lastIndexOf('}');
+        if (f !== -1 && l > f) s = s.slice(f, l + 1);
+        const r = JSON.parse(s);
+        return { intent: r.intent || 'none', action: r.action || 'none', location: r.location || null, reply: r.reply || '' };
+    } catch (e) {
+        return null;
+    }
+}
+
+// ── 执行AI意图 ──
+function _ovExecIntent(p) {
+    const startEl = document.getElementById('startPoint');
+    const endEl   = document.getElementById('endPoint');
+    switch (p.action) {
+        case 'set_start':
+            if (startEl && p.location) { startEl.value = p.location; showStatus(`起点：${p.location}`, 'success'); hapticFeedback('success'); }
+            break;
+        case 'set_end':
+            if (endEl && p.location) { endEl.value = p.location; showStatus(`终点：${p.location}`, 'success'); hapticFeedback('success'); }
+            if (startEl?.value && endEl?.value) {
+                // 起终点都有了，1.5秒后自动规划
+                setTimeout(() => {
+                    const form = document.getElementById('routeForm');
+                    if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                }, 1500);
+            }
+            break;
+        case 'plan':
+            document.getElementById('routeForm')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            break;
+        case 'clear':
+            if (startEl) startEl.value = '';
+            if (endEl) endEl.value = '';
+            break;
+        case 'locate':
+            document.getElementById('locateBtn')?.click();
+            break;
+        case 'emergency':
+            showEmergencyModal();
+            break;
+    }
+}
+
+// ── 提示音（轻柔版） ──
+function _ovBeep() {
+    _ensureAudioCtx();
+    if (!_appAudioCtx) return;
+    if (_appAudioCtx.state === 'suspended') { _appAudioCtx.resume(); return; }
+    try {
+        const osc = _appAudioCtx.createOscillator();
+        const gain = _appAudioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.12, _appAudioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, _appAudioCtx.currentTime + 0.08);
+        osc.connect(gain); gain.connect(_appAudioCtx.destination);
+        osc.start(); osc.stop(_appAudioCtx.currentTime + 0.08);
+    } catch (e) {}
+}
+
+// ============================================
 // 初始化
 // ============================================
 async function init() {
@@ -1065,6 +1433,23 @@ async function init() {
     
     // 初始化地图
     initMap();
+    
+    // 首次用户交互后启动语音监听
+    const _unlockVoice = () => {
+        _ensureAudioCtx();
+        getBaiduToken();
+        if (!_ovInited) {
+            initOutdoorVoice().then(() => {
+                speakText('语音导航已就绪，您可以直接说出目的地');
+            });
+        }
+        document.removeEventListener('click', _unlockVoice);
+        document.removeEventListener('touchstart', _unlockVoice);
+        document.removeEventListener('keydown', _unlockVoice);
+    };
+    document.addEventListener('click', _unlockVoice);
+    document.addEventListener('touchstart', _unlockVoice);
+    document.addEventListener('keydown', _unlockVoice);
     
     // 隐藏加载屏幕
     const loadingScreen = document.getElementById("loadingScreen");

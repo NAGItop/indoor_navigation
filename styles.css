@@ -1213,6 +1213,134 @@ a:focus-visible {
     }
 }
 
+/* ============================================
+   室外语音控制面板
+   ============================================ */
+.outdoor-voice-panel {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+    border-radius: var(--radius-2xl, 1rem);
+    border: 1px solid rgba(255,255,255,0.1);
+    background: linear-gradient(135deg, rgba(17,24,39,0.95), rgba(30,41,59,0.9));
+    transition: border-color 0.3s, background 0.3s;
+    margin-top: var(--space-4, 1rem);
+}
+
+/* 状态：监听中 */
+.outdoor-voice-panel.voice-listening {
+    border-color: rgba(16,185,129,0.4);
+    background: linear-gradient(135deg, rgba(6,78,59,0.3), rgba(17,24,39,0.95));
+}
+
+/* 状态：录音中 */
+.outdoor-voice-panel.voice-recording {
+    border-color: rgba(239,68,68,0.5);
+    background: linear-gradient(135deg, rgba(127,29,29,0.3), rgba(17,24,39,0.95));
+}
+
+/* 状态：识别中 */
+.outdoor-voice-panel.voice-processing {
+    border-color: rgba(59,130,246,0.5);
+    background: linear-gradient(135deg, rgba(29,78,216,0.2), rgba(17,24,39,0.95));
+}
+
+.ov-icon {
+    font-size: 1.75rem;
+    flex-shrink: 0;
+    line-height: 1;
+}
+
+.ov-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.ov-text {
+    font-size: var(--text-sm, 0.875rem);
+    font-weight: 600;
+    color: var(--color-text, #f9fafb);
+    line-height: 1.3;
+}
+
+.ov-hint {
+    font-size: var(--text-xs, 0.75rem);
+    color: var(--color-text-muted, #9ca3af);
+}
+
+/* 识别结果显示 */
+.ov-result {
+    display: none;
+    font-size: var(--text-sm, 0.875rem);
+    color: var(--color-primary, #3b82f6);
+    background: rgba(59,130,246,0.1);
+    border-radius: 4px;
+    padding: 2px 8px;
+    margin-top: 4px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 声波动画 */
+.ov-wave {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.ov-wave span {
+    display: inline-block;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--color-text-muted, #9ca3af);
+    animation: none;
+    height: 4px;
+    transition: background 0.2s;
+}
+
+.voice-listening .ov-wave span {
+    background: var(--color-success, #10b981);
+    animation: ov-wave-pulse 1.2s ease-in-out infinite;
+}
+.voice-listening .ov-wave span:nth-child(2) { animation-delay: 0.2s; }
+.voice-listening .ov-wave span:nth-child(3) { animation-delay: 0.4s; }
+
+.voice-recording .ov-wave span {
+    background: var(--color-danger, #ef4444);
+    animation: ov-wave-bounce 0.4s ease-in-out infinite alternate;
+}
+.voice-recording .ov-wave span:nth-child(2) { animation-delay: 0.13s; }
+.voice-recording .ov-wave span:nth-child(3) { animation-delay: 0.26s; }
+
+.voice-processing .ov-wave span {
+    background: var(--color-primary, #3b82f6);
+    animation: ov-wave-spin 1s linear infinite;
+}
+
+@keyframes ov-wave-pulse {
+    0%, 100% { height: 4px; }
+    50%       { height: 18px; }
+}
+
+@keyframes ov-wave-bounce {
+    from { height: 6px; }
+    to   { height: 20px; }
+}
+
+@keyframes ov-wave-spin {
+    0%   { height: 4px; opacity: 0.4; }
+    50%  { height: 16px; opacity: 1; }
+    100% { height: 4px; opacity: 0.4; }
+}
+
 @media (min-width: 1024px) {
     .main-panel {
         max-width: 900px;
