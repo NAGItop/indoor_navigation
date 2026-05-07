@@ -1156,7 +1156,7 @@ const VOICE_THRESHOLD = 8;         // 音量阈值（0-100），降低阈值更�
 const SILENCE_DURATION = 2000;     // 静音多久后停止录音（ms），加长容许说话停顿
 const MAX_RECORD_DURATION = 10000; // 最大单次录音时长（ms）
 const COOLDOWN_DURATION = 2500;    // 两次识别之间的最小间隔（ms）
-const MIN_RECORD_DURATION = 300;   // 最短录音时长（ms），降低门槛减少误丢弃
+const MIN_RECORD_DURATION = 800;   // 最短录音时长（ms），提高到800ms减少百度ASR误判
 
 // 检查是否支持
 function isSpeechRecognitionSupported() {
@@ -1866,10 +1866,18 @@ async function audioBlobToPCM(blob) {
     try {
         audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     } catch (e) {
-        console.log('[语音识别] 解码失败，尝试使用原始数据');
-        // 如果解码失败（某些浏览器不支持 webm），返回原始数据
-        // 注意：这种情况下百度 API 可能无法识别
-        throw new Error('音频格式解码失败，请使用 Chrome 浏览器');
+        console.log('[语音识别] decodeAudioData 失败，尝试使用原始数据:', e.message);
+        // Edge/微信 WebView 解码 webm 失败时，直接返回原始 ArrayBuffer
+        // 百度 ASR 可能仍能识别（取决于浏览器是否发送了可识别的格式）
+        const rawData = new Uint8Array(arrayBuffer);
+        if (rawData.length < 1000) {
+            throw new Error('音频数据过短');
+        }
+        // 将原始数据按采样率截断（假设原始采样率>=16kHz）
+        const bytesPerSample = 2; // 假设 16bit
+        const targetBytes = Math.round(rawData.length * (BAIDU_ASR_SAMPLE_RATE / 16000));
+        const truncated = rawData.slice(0, Math.min(targetBytes, rawData.length));
+        return truncated.buffer;
     }
 
     // 重采样到 16kHz 单声道

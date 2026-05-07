@@ -10,18 +10,50 @@ const BAIDU_TTS = {
     appId: '7664376',
     apiKey: 'jZie8aJhPhjd4elJIpWrh41J',
     secretKey: 'TYSz5twRYNbKWF5DLYDZucdF9VlL1gyS',
-    _token: '24.88341b6b0af1b86b69142fb92b927417.2592000.1779791566.282335-123010579',
+    _token: '24.9a1d09f2906164e58f9b180ce63f5ee1.2592000.1780722554.282335-123010579',
     _expireAt: 0
 };
 
-// 获取百度 access_token（硬编码 token 优先，避免 CORS）
+// 获取百度 access_token（带自动刷新）
 async function getBaiduToken() {
+    // 检查缓存
     if (BAIDU_TTS._token && Date.now() < BAIDU_TTS._expireAt) {
         return BAIDU_TTS._token;
     }
-    // 硬编码 token（2026-04-26 获取，有效期30天）
-    BAIDU_TTS._expireAt = Date.now() + 25 * 24 * 60 * 60 * 1000;
-    return BAIDU_TTS._token;
+    
+    // 尝试从 Worker 获取（推荐，避免前端 CORS）
+    try {
+        const workerUrl = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-token';
+        const res = await fetch(workerUrl);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.token) {
+                BAIDU_TTS._token = data.token;
+                BAIDU_TTS._expireAt = data.expireAt || (Date.now() + 25 * 24 * 60 * 60 * 1000);
+                return BAIDU_TTS._token;
+            }
+        }
+    } catch (e) {
+        console.log('[TTS] Worker获取token失败，使用降级方案');
+    }
+    
+    // 降级：直连百度获取token（通过 CORS 代理）
+    try {
+        const tokenUrl = `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${BAIDU_TTS.apiKey}&client_secret=${BAIDU_TTS.secretKey}`;
+        const proxy = 'https://corsproxy.io/?' + encodeURIComponent(tokenUrl);
+        const res = await fetch(proxy);
+        const data = await res.json();
+        if (data.access_token) {
+            BAIDU_TTS._token = data.access_token;
+            BAIDU_TTS._expireAt = Date.now() + (data.expires_in - 86400) * 1000;
+            return BAIDU_TTS._token;
+        }
+    } catch (e) {
+        console.log('[TTS] 获取token失败:', e);
+    }
+    
+    // 最后的兜底：使用旧的硬编码 token（可能已过期但试试看）
+    return BAIDU_TTS._token || null;
 }
 
 // 判断移动端
