@@ -865,6 +865,8 @@ function planRoute() {
 
     // 切换地图到起点楼层
     switchToFloor(startRoom.floor);
+    // 更新楼层徽章（显示目标和起点楼层）
+    updateFloorBadge(startRoom.floor, endRoom.floor);
 
     // 统计总步数和距离
     const totalSteps = segments.reduce((s, seg) => s + seg.path.length, 0);
@@ -905,6 +907,7 @@ function clearRoute() {
     document.getElementById("endSelect").value   = "";
     showResult(`<div class="result-placeholder"><span class="placeholder-icon">🗺️</span><p>选择起点和终点后点击"开始规划路线"</p></div>`);
     hideStepPanel();
+    updateFloorBadge(state.viewFloor);
     speak("路线已清除");
 }
 
@@ -930,9 +933,21 @@ function switchToFloor(floor) {
     document.querySelectorAll(".floor-btn").forEach(btn => {
         btn.classList.toggle("is-active", Number(btn.dataset.floor) === floor);
     });
+    // 更新地图右上角楼层徽章
+    updateFloorBadge(floor);
     // 通知屏幕阅读器
     const liveRegion = document.getElementById("floorAnnounce");
     if (liveRegion) liveRegion.textContent = `正在查看第 ${floor} 层平面图`;
+}
+
+function updateFloorBadge(floor, destFloor) {
+    const badge = document.getElementById("floorBadge");
+    if (!badge) return;
+    let html = `<span class="floor-badge-current">${floor}F</span>`;
+    if (destFloor && destFloor !== floor) {
+        html += `<span class="floor-badge-route">目标 ${destFloor}F</span>`;
+    }
+    badge.innerHTML = html;
 }
 
 function initFloorButtons() {
@@ -1310,7 +1325,9 @@ async function startRecording() {
                 }
             } catch (e) {
                 console.log('[语音识别] 处理失败:', e.message);
-                // 不频繁报错，只 console
+                // 不频繁报错，但提示用户
+                const errMsg = e.message.includes('超时') ? '识别超时，请重试' : '语音识别失败，请重试';
+                speak(errMsg);
             }
 
             // 冷却期
@@ -1367,16 +1384,17 @@ function updateVoiceStatus(status) {
     const textEl = panel?.querySelector('.voice-text');
 
     if (panel) {
-        panel.classList.remove('status-listening', 'status-recording', 'status-processing');
+        panel.classList.remove('status-listening', 'status-recording', 'status-processing', 'status-thinking');
         panel.classList.add('status-' + status);
     }
 
     if (textEl) {
         const messages = {
-            'idle': '语音功能未启动',
-            'listening': '语音监听中，直接说话即可',
-            'recording': '正在聆听...',
-            'processing': '正在识别语音...',
+            'idle':      '🔇 语音功能未启动',
+            'listening': '🎤 正在监听，请说话',
+            'recording': '🔴 正在录音，请继续说话',
+            'processing': '⏳ 正在识别语音...',
+            'thinking':  '🧠 正在理解意图...',
         };
         textEl.textContent = messages[status] || messages.listening;
     }
@@ -1687,10 +1705,13 @@ async function processVoiceCommand(text) {
     if (resultEl) {
         resultEl.textContent = '识别到：' + (text || '（无内容）');
     }
+    // 播报识别内容，让用户确认
+    if (text) speak('识别到：' + text);
 
     // ===== 第一优先：AI 智能理解 =====
-    speak('正在思考');
+    updateVoiceStatus('thinking');
     const aiReply = await callAI(text);
+    updateVoiceStatus('processing');
 
     if (aiReply) {
         console.log('[AI] 回复:', aiReply);
@@ -1824,16 +1845,28 @@ async function recognizeWithBaidu(audioBlob, mimeType) {
     // 通过 Worker 代理调用百度 ASR（绕过 CORS）
     const WORKER_URL = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-asr';
 
-    const response = await fetch(WORKER_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            speech: base64Audio,
-            len: pcmData.byteLength,
-        }),
-    });
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 8000);
 
-    const data = await response.json();
+    let data;
+    try {
+        const response = await fetch(WORKER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                speech: base64Audio,
+                len: pcmData.byteLength,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(tid);
+        data = await response.json();
+    } catch (e) {
+        clearTimeout(tid);
+        if (e.name === 'AbortError') throw new Error('识别超时，请重试');
+        throw e;
+    }
+
     console.log('[语音识别] API 响应:', data);
 
     if (data.err_no === 0 && data.result && data.result.length > 0) {
@@ -1932,6 +1965,13 @@ function stopVoiceListener() {
 function bindVoiceEvents() {
     // 持续监听模式不需要按钮
     // initVoiceListener() 在 init() 里的 initAudioOnInteraction 中调用
+
+    // 页面切回前台时恢复监听
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && voiceListening && !voiceRecording) {
+            monitorAudioLevel();
+        }
+    });
 }
 
 // 百度语音合成配置
@@ -1945,24 +1985,43 @@ const BAIDU_TTS_CONFIG = {
 let baiduAccessToken = '24.88341b6b0af1b86b69142fb92b927417.2592000.1779791566.282335-123010579';
 let tokenExpireTime = Date.now() + (25 * 24 * 60 * 60 * 1000); // token 获取时间: 2026-04-26, 有效期30天, 设25天过期
 
-// 获取百度 access token（直接使用硬编码 token，避免 CORS 错误）
+// 获取百度 access token（优先走 Worker 刷新，兜底硬编码）
 async function getBaiduAccessToken() {
-    // 硬编码 token 有效期内直接返回，不发任何网络请求
+    // 硬编码 token 有效期内直接返回
     if (baiduAccessToken && Date.now() < tokenExpireTime) {
-        console.log('[Token] 使用硬编码 token（剩余有效期：' + Math.round((tokenExpireTime - Date.now()) / (24*60*60*1000)) + '天）');
         return baiduAccessToken;
     }
-    
-    // Token 过期后尝试 CORS 代理刷新
-    console.log('[Token] 硬编码 token 已过期，尝试刷新...');
+
+    // 优先：走 Worker /baidu-token 刷新（最稳定）
+    try {
+        const workerUrl = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-token';
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 6000);
+        const res = await fetch(workerUrl, { signal: ctrl.signal });
+        clearTimeout(tid);
+        if (res.ok) {
+            const json = await res.json();
+            if (json.token) {
+                baiduAccessToken = json.token;
+                tokenExpireTime = json.expireAt || (Date.now() + 25 * 24 * 60 * 60 * 1000);
+                console.log('[Token] Worker 刷新成功');
+                return baiduAccessToken;
+            }
+        }
+    } catch (e) {
+        console.log('[Token] Worker 刷新失败:', e.message);
+    }
+
+    // 降级：CORS 代理刷新
+    console.log('[Token] 尝试 CORS 代理刷新...');
     const tokenUrl = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id='
         + BAIDU_TTS_CONFIG.apiKey + '&client_secret=' + BAIDU_TTS_CONFIG.secretKey;
-    
+
     const proxyUrls = [
         'https://corsproxy.io/?',
         'https://api.allorigins.win/raw?url=',
     ];
-    
+
     for (const proxy of proxyUrls) {
         try {
             const response = await fetch(proxy + encodeURIComponent(tokenUrl));
@@ -1970,16 +2029,17 @@ async function getBaiduAccessToken() {
             if (data.access_token) {
                 baiduAccessToken = data.access_token;
                 tokenExpireTime = Date.now() + (29 * 24 * 60 * 60 * 1000);
-                console.log('[Token] 通过代理刷新成功');
+                console.log('[Token] CORS 代理刷新成功');
                 return baiduAccessToken;
             }
         } catch (e) {
             console.log('[Token] 代理', proxy, '失败');
         }
     }
-    
-    console.log('[Token] 刷新失败，请手动更新硬编码 token');
-    return null;
+
+    // 最后兜底：返回硬编码 token（可能已过期但试试看）
+    console.log('[Token] 所有刷新方案失败，返回硬编码 token');
+    return baiduAccessToken;
 }
 
 // CORS 代理列表（用于手机浏览器中转百度TTS请求）
@@ -2230,6 +2290,48 @@ function zoomOut() { state.scale = Math.max(0.4, state.scale / 1.2); }
 function resetView() { fitView(); }
 
 // ============================================
+// 紧急求助
+// ============================================
+function triggerSOS() {
+    const modal = document.getElementById('sosModal');
+    if (!modal) return;
+
+    // 获取当前位置
+    const startSel = document.getElementById('startSelect');
+    const currentFloor = state.viewFloor;
+    let locationText = `第 ${currentFloor} 层`;
+
+    if (startSel?.value) {
+        const room = ALL_ROOMS.find(r => r.id === startSel.value);
+        if (room) {
+            const shortName = room.name.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').trim();
+            locationText = `第 ${room.floor} 层 · ${shortName}`;
+        }
+    }
+
+    // 更新时间戳
+    const now = new Date();
+    const timeStr = now.toTimeString().slice(0, 8);
+    const locEl = document.getElementById('sosLocation');
+    const timeEl = document.getElementById('sosTime');
+    if (locEl) locEl.textContent = locationText;
+    if (timeEl) timeEl.textContent = timeStr;
+
+    // 显示弹窗
+    modal.classList.remove('is-hidden');
+
+    // 震动反馈
+    if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 100]);
+
+    console.log('[SOS] 紧急求助已触发，当前位置：' + locationText);
+}
+
+function closeSOS() {
+    const modal = document.getElementById('sosModal');
+    if (modal) modal.classList.add('is-hidden');
+}
+
+// ============================================
 // 事件绑定
 // ============================================
 function bindEvents() {
@@ -2243,9 +2345,12 @@ function bindEvents() {
     document.getElementById("closeStep")?.addEventListener("click", hideStepPanel);
     document.getElementById("nextStep")?.addEventListener("click", nextStep);
     document.getElementById("prevStep")?.addEventListener("click", prevStep);
+    document.getElementById("sosBtn")?.addEventListener("click", triggerSOS);
+    document.getElementById("sosCloseBtn")?.addEventListener("click", closeSOS);
+    document.querySelector(".sos-backdrop")?.addEventListener("click", closeSOS);
 
     document.addEventListener("keydown", e => {
-        if (e.key === "Escape")                             hideStepPanel();
+        if (e.key === "Escape")                             { hideStepPanel(); closeSOS(); }
         if (e.key === "ArrowRight" || e.key === " ")        { e.preventDefault(); nextStep(); }
         if (e.key === "ArrowLeft")                          { e.preventDefault(); prevStep(); }
         if (e.key === "v" && (e.ctrlKey||e.metaKey))        { e.preventDefault(); toggleVoice(); }
@@ -2293,7 +2398,8 @@ function init() {
     initFloorButtons();
     bindEvents();
     bindVoiceEvents();
-    
+    updateFloorBadge(state.viewFloor);
+
     // 同步语音按钮初始状态
     updateVoiceButton();
     

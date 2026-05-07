@@ -329,6 +329,16 @@ body {
     animation: pulse 1s ease-in-out infinite;
 }
 
+.voice-panel.status-thinking .voice-wave {
+    background: var(--color-primary);
+    animation: thinkingPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes thinkingPulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
+    50% { transform: scale(1.15); box-shadow: 0 0 0 5px rgba(59, 130, 246, 0); }
+}
+
 @keyframes voicePulseFast {
     0%, 100% {
         transform: scale(1);
@@ -712,3 +722,182 @@ body {
         --color-border: rgba(255, 255, 255, 0.3);
     }
 }
+
+/* ── 紧急求助按钮 ─────────────────────────────── */
+.sos-btn {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(239, 68, 68, 0.15);
+    border: 2px solid rgba(239, 68, 68, 0.5);
+    border-radius: var(--radius-lg);
+    color: #ef4444;
+    font-size: 1.25rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    animation: sos-pulse 2s ease-in-out infinite;
+}
+
+.sos-btn:hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: #ef4444;
+    transform: scale(1.08);
+}
+
+@keyframes sos-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+    50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+/* ── 楼层徽章（地图右上角）─────────────────────── */
+.floor-badge {
+    position: absolute;
+    top: 0.5rem;
+    right: 4.5rem;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.floor-badge-current {
+    background: rgba(59, 130, 246, 0.9);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 700;
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--radius-md);
+    box-shadow: 0 2px 12px rgba(59, 130, 246, 0.5);
+    min-width: 48px;
+    text-align: center;
+}
+
+.floor-badge-route {
+    background: rgba(245, 158, 11, 0.9);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-sm);
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
+    text-align: center;
+}
+
+/* ── SOS 弹窗 ─────────────────────────────────── */
+.sos-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sos-modal.is-hidden {
+    display: none;
+}
+
+.sos-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+}
+
+.sos-card {
+    position: relative;
+    z-index: 1;
+    background: var(--color-bg-card);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: var(--radius-2xl);
+    padding: 2rem;
+    max-width: 360px;
+    width: calc(100% - 2rem);
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(239, 68, 68, 0.15);
+    animation: sos-appear 0.3s ease;
+}
+
+@keyframes sos-appear {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+.sos-icon {
+    font-size: 3rem;
+    margin-bottom: 0.75rem;
+    animation: sos-blink 1s ease-in-out infinite;
+}
+
+@keyframes sos-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.sos-title {
+    font-size: 1.375rem;
+    font-weight: 700;
+    color: #ef4444;
+    margin-bottom: 1.25rem;
+}
+
+.sos-info {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    margin-bottom: 1rem;
+    text-align: left;
+}
+
+.sos-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid rgba(239, 68, 68, 0.1);
+}
+
+.sos-row:last-child {
+    border-bottom: none;
+}
+
+.sos-label {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+}
+
+.sos-value {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-text);
+}
+
+.sos-tip {
+    font-size: 0.875rem;
+    color: var(--color-text-muted);
+    margin-bottom: 1.5rem;
+    line-height: 1.5;
+}
+
+.btn-danger {
+    color: white;
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4);
+    border: none;
+}
+
+.btn-danger:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5);
+}
+
+.btn-full {
+    width: 100%;
+}
+
+
+

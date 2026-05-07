@@ -103,6 +103,9 @@
                 教学楼室内导航
             </h1>
             <div class="header-actions">
+                <button type="button" id="sosBtn" class="sos-btn" aria-label="紧急求助">
+                    <span aria-hidden="true">🆘</span>
+                </button>
                 <button type="button" id="voiceToggle" class="icon-btn voice-toggle active"
                         aria-label="语音导航已开启" aria-pressed="true">
                     <span class="voice-icon" aria-hidden="true">🔊</span>
@@ -114,6 +117,9 @@
         <main class="main-content">
             <!-- 地图区域 -->
             <div class="map-section">
+                <div id="floorBadge" class="floor-badge" aria-live="polite">
+                    <span class="floor-badge-current">1F</span>
+                </div>
                 <div class="canvas-container" role="img" aria-label="教学楼室内平面图">
                     <canvas id="mapCanvas"></canvas>
 
@@ -235,6 +241,31 @@
                     <span aria-hidden="true">→</span>
                 </button>
             </div>
+        </div>
+    </div>
+
+    <!-- 紧急求助弹窗 -->
+    <div id="sosModal" class="sos-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="sosTitle">
+        <div class="sos-backdrop"></div>
+        <div class="sos-card">
+            <div class="sos-icon">🆘</div>
+            <h2 id="sosTitle" class="sos-title">紧急求助已发起</h2>
+            <div class="sos-info">
+                <div class="sos-row">
+                    <span class="sos-label">当前位置</span>
+                    <span id="sosLocation" class="sos-value">第 1 层 · 一楼大门</span>
+                </div>
+                <div class="sos-row">
+                    <span class="sos-label">求助时间</span>
+                    <span id="sosTime" class="sos-value">--:--:--</span>
+                </div>
+                <div class="sos-row">
+                    <span class="sos-label">系统状态</span>
+                    <span class="sos-value">✅ 正在联系管理员</span>
+                </div>
+            </div>
+            <p class="sos-tip">管理员将收到您的位置信息，请保持镇定，稍候回应</p>
+            <button type="button" id="sosCloseBtn" class="btn btn-danger btn-full">确认求助</button>
         </div>
     </div>
 

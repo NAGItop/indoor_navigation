@@ -1164,6 +1164,9 @@ async function _ovStartRec() {
                 if (text) await _ovProcessCmd(text);
             } catch (e) {
                 console.log('[室外语音] 识别失败:', e.message);
+                const errMsg = e.message.includes('超时') ? '识别超时，请重试' : '语音识别失败，请重试';
+                speakText(errMsg);
+                _ovUpdateStatus('listening');
             }
             _ovRecording = false;
             _ovCooldown = true;
@@ -1212,18 +1215,27 @@ async function _ovRecognize(blob) {
 
     const WORKER_URL = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-asr';
 
-    const res = await fetch(WORKER_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            speech: b64,
-            len: pcm.byteLength,
-        }),
-    });
-
-    const data = await res.json();
-    if (data.err_no === 0 && data.result?.length) return data.result[0];
-    throw new Error('百度ASR错误: ' + (data.err_msg || data.err_no));
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 8000);
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                speech: b64,
+                len: pcm.byteLength,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(tid);
+        const data = await res.json();
+        if (data.err_no === 0 && data.result?.length) return data.result[0];
+        throw new Error('百度ASR错误: ' + (data.err_msg || data.err_no));
+    } catch (e) {
+        clearTimeout(tid);
+        if (e.name === 'AbortError') throw new Error('识别超时，请重试');
+        throw e;
+    }
 }
 
 // ── Blob 转 16kHz 单声道 PCM ──
@@ -1260,6 +1272,8 @@ async function _ovProcessCmd(text) {
     // 显示识别结果到面板
     const resultEl = document.getElementById('outdoorVoiceResult');
     if (resultEl) { resultEl.textContent = text || '（未识别到内容）'; resultEl.style.display = 'inline'; }
+    // 播报识别内容，让用户确认听到了什么
+    if (text) speakText(`识别到：${text}`);
     speakText('正在理解');
 
     // AI 意图理解
