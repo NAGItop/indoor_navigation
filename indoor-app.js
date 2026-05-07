@@ -1733,14 +1733,12 @@ async function processVoiceCommand(text) {
         console.log('[AI] 回复:', aiReply);
         const parsed = parseAIResponse(aiReply);
 
-        if (parsed && parsed.reply) {
-            // 先执行操作（如设起点/终点），再语音播报
-            const executed = executeAIIntent(parsed);
-            // 如果 AI 没有帮我们播报（比如 plan/clear 等操作会触发自身的 speak），则播报 AI 的回复
-            if (!executed || parsed.intent === 'chat' || parsed.intent === 'help' || parsed.intent === 'none') {
-                speak(parsed.reply);
-            }
-            return;
+        if (parsed && parsed.action && parsed.action !== 'none') {
+            // 执行 AI 意图（set_end / set_start / plan / clear 等）
+            executeAIIntent(parsed);
+            // 如果 AI 有回复文本，播报它
+            if (parsed.reply) speak(parsed.reply);
+            return; // ✅ AI 成功处理后直接返回，不再走关键词降级
         }
     }
 
