@@ -1167,11 +1167,11 @@ const BAIDU_ASR_SAMPLE_RATE = 16000;
 const BAIDU_ASR_CUID = '7664376';
 
 // 监听参数
-const VOICE_THRESHOLD = 8;         // 音量阈值（0-100），降低阈值更容易触发
+const VOICE_THRESHOLD = 5;         // 音量峰值阈值（0-255，高频段），用峰值代替平均值更抗噪
 const SILENCE_DURATION = 2000;     // 静音多久后停止录音（ms），加长容许说话停顿
 const MAX_RECORD_DURATION = 10000; // 最大单次录音时长（ms）
 const COOLDOWN_DURATION = 2500;    // 两次识别之间的最小间隔（ms）
-const MIN_RECORD_DURATION = 800;   // 最短录音时长（ms），提高到800ms减少百度ASR误判
+const MIN_RECORD_DURATION = 500;   // 最短录音时长（ms），降至500ms兼容短指令如"去101"
 
 // 检查是否支持
 function isSpeechRecognitionSupported() {
@@ -1184,10 +1184,11 @@ async function initVoiceListener() {
     voiceInitialized = true;
 
     try {
+        // 不指定 sampleRate，让浏览器用设备原生采样率（通常 44100 或 48000）
+        // audioBlobToPCM 会自动重采样到 16kHz
         monitorStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
-                sampleRate: BAIDU_ASR_SAMPLE_RATE,
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
@@ -1195,6 +1196,9 @@ async function initVoiceListener() {
         });
 
         const ctx = initAudio();
+        // 确保 AudioContext 已恢复（浏览器默认 suspended）
+        if (ctx && ctx.state === 'suspended') await ctx.resume();
+
         const source = ctx.createMediaStreamSource(monitorStream);
         monitorAnalyser = ctx.createAnalyser();
         monitorAnalyser.fftSize = 512;
@@ -1202,21 +1206,22 @@ async function initVoiceListener() {
         source.connect(monitorAnalyser);
 
         voiceListening = true;
-        console.log('[语音监听] 已启动持续麦克风监听');
+        console.log('[语音监听] 已启动（NativeRate: ' + ctx.sampleRate + 'Hz → 重采样到 16000Hz)');
         updateVoiceStatus('listening');
         monitorAudioLevel();
     } catch (e) {
         console.log('[语音监听] 初始化失败:', e);
+        voiceInitialized = false; // 失败时允许重试
         if (e.name === 'NotAllowedError') {
             showResult('请允许麦克风权限以使用语音控制', 'error');
         } else if (e.name === 'NotFoundError') {
             showResult('未检测到麦克风设备', 'error');
         }
-        voiceInitialized = false;
     }
 }
 
 // ── 持续检测音量 ──
+let _dbgLogTimer = 0;
 function monitorAudioLevel() {
     if (!voiceListening || !monitorAnalyser) return;
 
@@ -1224,12 +1229,24 @@ function monitorAudioLevel() {
     const dataArray = new Uint8Array(bufferLength);
     monitorAnalyser.getByteFrequencyData(dataArray);
 
-    // 计算平均音量
-    let sum = 0;
-    for (let i = 0; i < bufferLength; i++) {
-        sum += dataArray[i];
+    // 用高频段能量峰值（人声主要在 300Hz~4kHz，对应 fftSize=512@16kHz 约 bins 6~85）
+    // 比全频段均值更稳定，不受空调/风扇低频干扰
+    const nyquist = monitorAnalyser.context.sampleRate / 2;
+    const binHz = nyquist / bufferLength;
+    const lowBin = Math.floor(300 / binHz);
+    const highBin = Math.floor(4000 / binHz);
+    let peak = 0;
+    for (let i = lowBin; i <= highBin && i < bufferLength; i++) {
+        if (dataArray[i] > peak) peak = dataArray[i];
     }
-    const avgVolume = sum / bufferLength;
+
+    // 每秒打印一次音量读数，方便调试
+    _dbgLogTimer++;
+    if (_dbgLogTimer % 60 === 0) {
+        console.log('[音量监控] Peak=' + peak + ' (阈值=' + VOICE_THRESHOLD + ')', '采样率=' + monitorAnalyser.context.sampleRate);
+    }
+
+    const avgVolume = peak; // 用峰值代替平均值
 
     // 如果正在录音，检测静音
     if (voiceRecording) {
@@ -1269,11 +1286,10 @@ async function startRecording() {
     const recordStartTime = Date.now();
 
     try {
-        // 获取新的麦克风流用于录音
+        // 不指定 sampleRate，让浏览器用原生采样率（audioBlobToPCM 会重采样）
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
-                sampleRate: BAIDU_ASR_SAMPLE_RATE,
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
