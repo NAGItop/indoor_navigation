@@ -450,16 +450,18 @@ function getInitialFacing(roomDoorR, roomDoorC, floor) {
 function generateSteps(segments, startRoom, endRoom) {
     state.pathSteps   = [];
     state.currentStep = 0;
+    SEG_STEP_RANGE.length = 0;  // 清空
 
     // 推断初始朝向
     let facing = getInitialFacing(startRoom.door[0], startRoom.door[1], startRoom.floor);
 
-    // 出发
+    // 出发（起点位置）
     state.pathSteps.push({
         icon: "🚪",
         instruction: `从 ${startRoom.name} 出发`,
         hint: startRoom.desc,
         floor: startRoom.floor,
+        pathPos: [segments[0].path[0][0], segments[0].path[0][1]],
     });
 
     for (let si = 0; si < segments.length; si++) {
@@ -488,6 +490,9 @@ function generateSteps(segments, startRoom, endRoom) {
                             instruction: `${turn}`,
                             hint: "注意前方转角",
                             floor: seg.floor,
+                            pathPos: [r1, c1],
+                            direction: dir,
+                            isTurn: true,
                         });
                         facing = updateFacing(facing, turn);
                     }
@@ -497,6 +502,8 @@ function generateSteps(segments, startRoom, endRoom) {
                         instruction: `直行 ${((runDist+1)*0.5).toFixed(1)} 米`,
                         hint: getNearbyHint(r1, c1, seg.floor),
                         floor: seg.floor,
+                        pathPos: [r1, c1],
+                        direction: dir,
                     });
                 }
                 runDist = 0;
@@ -514,6 +521,9 @@ function generateSteps(segments, startRoom, endRoom) {
                     instruction: `${finalTurn}`,
                     hint: isLastSeg ? "即将到达目的地" : "前方即是楼梯间",
                     floor: seg.floor,
+                    pathPos: [lr, lc],
+                    direction: lastDir,
+                    isTurn: true,
                 });
                 facing = updateFacing(facing, finalTurn);
             }
@@ -522,6 +532,8 @@ function generateSteps(segments, startRoom, endRoom) {
                 instruction: `直行 ${((runDist+1)*0.5).toFixed(1)} 米`,
                 hint: isLastSeg ? "即将到达目的地" : "前方即是楼梯间",
                 floor: seg.floor,
+                pathPos: [lr, lc],
+                direction: lastDir,
             });
         }
 
@@ -538,9 +550,9 @@ function generateSteps(segments, startRoom, endRoom) {
                 isFloorChange: true,
                 fromFloor: seg.floor,
                 toFloor: nextFloor,
+                pathPos: [path[path.length-1][0], path[path.length-1][1]],
             });
             // 上楼后，假设用户面向与楼梯入口相反的方向（进入走廊）
-            // 楼梯入口在列24，面向西（W），上楼后应该面向西继续走
             facing = "W";
         }
     }
@@ -551,6 +563,7 @@ function generateSteps(segments, startRoom, endRoom) {
         instruction: `到达 ${endRoom.name}`,
         hint: endRoom.desc,
         floor: endRoom.floor,
+        isArrival: true,
     });
 
     renderSteps();
@@ -678,7 +691,14 @@ function render() {
 
     // 绘制当前楼层的路径段
     const seg = state.pathSegments.find(s => s.floor === floor);
-    if (seg) drawPath(ctx, cell, seg.path);
+    if (seg) {
+        drawPath(ctx, cell, seg.path);
+        // 路径方向小箭头
+        drawPathArrows(ctx, cell, seg.path);
+    }
+
+    // 绘制当前位置指示器（脉冲点）
+    drawCurrentPosition(ctx, cell);
 
     // 绘制楼梯标记（换层点高亮）
     for (const [sid, sn] of Object.entries(STAIR_NODES)) {
@@ -763,6 +783,128 @@ function drawStairMark(ctx, cell, stairNode, highlighted) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.shadowBlur = 0;
     ctx.fillText("🪜", x, y);
+    ctx.restore();
+}
+
+// ── 当前导航位置指示器（脉冲动画点）──
+function drawCurrentPosition(ctx, cell) {
+    if (state.pathSteps.length === 0) return;
+    const step = state.pathSteps[state.currentStep];
+    if (!step?.pathPos) return;
+
+    const [r, c] = step.pathPos;
+    // 如果当前步骤不在当前楼层，不显示
+    if (step.floor !== state.viewFloor) return;
+
+    const x = state.offsetX + c * cell + cell/2;
+    const y = state.offsetY + r * cell + cell/2;
+    const baseRadius = Math.max(7, cell * 0.4);
+
+    ctx.save();
+
+    // 外圈脉冲（根据时间动画）
+    const pulse = Math.sin(state.animOffset * 0.1) * 0.5 + 0.5;  // 0~1
+    const outerRadius = baseRadius * (1.2 + pulse * 0.5);
+    const outerAlpha = 0.3 + pulse * 0.4;
+
+    ctx.fillStyle = `rgba(16, 185, 129, ${outerAlpha})`;  // startColor
+    ctx.beginPath();
+    ctx.arc(x, y, outerRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 内圈实心点
+    ctx.shadowColor = "#10b981";
+    ctx.shadowBlur = 16;
+    ctx.fillStyle = "#10b981";
+    ctx.beginPath();
+    ctx.arc(x, y, baseRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 白色中心
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(x, y, baseRadius * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 转向指示箭头（如果这一步有方向）
+    if (step.direction) {
+        drawNavArrow(ctx, x, y, step.direction, cell);
+    }
+
+    ctx.restore();
+}
+
+// ── 导航方向箭头（朝向指示）──
+function drawNavArrow(ctx, cx, cy, direction, cell) {
+    const arrowSize = Math.max(6, cell * 0.35);
+    const DIR_ANGLES = { N: -Math.PI/2, S: Math.PI/2, E: 0, W: Math.PI };
+    const angle = DIR_ANGLES[direction];
+    if (angle === undefined) return;
+
+    // 箭头画在内圈下方（相对于前进方向）
+    const offsetDist = cell * 0.3;
+    const ax = cx + Math.cos(angle) * offsetDist;
+    const ay = cy + Math.sin(angle) * offsetDist;
+
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(angle);
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.moveTo(arrowSize, 0);
+    ctx.lineTo(-arrowSize * 0.5, -arrowSize * 0.6);
+    ctx.lineTo(-arrowSize * 0.5, arrowSize * 0.6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+}
+
+// ── 绘制路径上的方向小箭头（沿路径均匀分布）──
+function drawPathArrows(ctx, cell, path, step) {
+    if (!path || path.length < 2) return;
+
+    const arrowCount = Math.min(path.length - 1, 8);  // 最多8个
+    const stepIdx = Math.floor(path.length / (arrowCount + 1));
+
+    for (let i = 1; i <= arrowCount; i++) {
+        const idx = i * stepIdx;
+        if (idx >= path.length) break;
+        const [r, c] = path[idx];
+        const nextIdx = Math.min(idx + 1, path.length - 1);
+        const [nr, nc] = path[nextIdx];
+
+        // 判断方向
+        let dir;
+        if (nr < r) dir = "N";
+        else if (nr > r) dir = "S";
+        else if (nc > c) dir = "E";
+        else if (nc < c) dir = "W";
+
+        const x = state.offsetX + c * cell + cell/2;
+        const y = state.offsetY + r * cell + cell/2;
+
+        drawSmallArrow(ctx, x, y, dir, cell);
+    }
+}
+
+function drawSmallArrow(ctx, cx, cy, direction, cell) {
+    const DIR_ANGLES = { N: -Math.PI/2, S: Math.PI/2, E: 0, W: Math.PI };
+    const angle = DIR_ANGLES[direction];
+    if (angle === undefined) return;
+
+    const size = Math.max(4, cell * 0.2);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.fillStyle = "rgba(59, 130, 246, 0.7)";
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.4, -size * 0.5);
+    ctx.lineTo(-size * 0.4, size * 0.5);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
 }
 
@@ -971,14 +1113,27 @@ function renderSteps() {
 
     stepList.innerHTML = state.pathSteps.map((step, idx) => {
         const isActive = idx === state.currentStep;
-        const floorTag = step.isFloorChange
+        const isTurn = step.isTurn;
+        const isArrival = step.isArrival;
+        const isFloorChange = step.isFloorChange;
+
+        // 步骤类型样式
+        const typeClass = isArrival ? "is-arrival" :
+                         isFloorChange ? "is-floor-change" :
+                         isTurn ? "is-turn" : "";
+
+        const floorTag = isFloorChange
             ? `<span class="step-floor-tag is-change">换层 → ${step.toFloor}楼</span>`
             : `<span class="step-floor-tag">${step.floor}楼</span>`;
+
+        // 到达步骤特殊图标
+        const icon = isArrival ? "🎊" : isFloorChange ? (step.toFloor > step.fromFloor ? "⬆️" : "⬇️") : step.icon;
+
         return `
-            <div class="step-item ${isActive ? "is-active" : ""}" data-index="${idx}">
-                <span class="step-number">${idx + 1}</span>
+            <div class="step-item ${typeClass} ${isActive ? "is-active" : ""}" data-index="${idx}">
+                <span class="step-number">${isArrival ? "★" : idx + 1}</span>
                 <div class="step-content">
-                    <div class="step-instruction">${step.icon} ${step.instruction}</div>
+                    <div class="step-instruction">${icon} ${step.instruction}</div>
                     <div class="step-hint">${step.hint}</div>
                 </div>
                 ${floorTag}
@@ -1007,6 +1162,7 @@ function nextStep() {
     if (state.currentStep < state.pathSteps.length - 1) {
         state.currentStep++;
         renderSteps();
+        render();  // 刷新地图上的当前位置指示器
         speakCurrentStep();
     }
 }
@@ -1015,6 +1171,7 @@ function prevStep() {
     if (state.currentStep > 0) {
         state.currentStep--;
         renderSteps();
+        render();  // 刷新地图上的当前位置指示器
         speakCurrentStep();
     }
 }
@@ -1168,10 +1325,10 @@ const BAIDU_ASR_CUID = '7664376';
 
 // 监听参数
 const VOICE_THRESHOLD = 5;         // 音量峰值阈值（0-255，高频段），用峰值代替平均值更抗噪
-const SILENCE_DURATION = 2000;     // 静音多久后停止录音（ms），加长容许说话停顿
-const MAX_RECORD_DURATION = 10000; // 最大单次录音时长（ms）
+const SILENCE_DURATION = 1000;     // 静音多久后停止录音（ms），说完即停
+const MAX_RECORD_DURATION = 6000;  // 最大单次录音时长（ms），6秒足够说完指令
 const COOLDOWN_DURATION = 2500;    // 两次识别之间的最小间隔（ms）
-const MIN_RECORD_DURATION = 500;   // 最短录音时长（ms），降至500ms兼容短指令如"去101"
+const MIN_RECORD_DURATION = 300;   // 最短录音时长（ms），兼容短指令如"去101"
 
 // 检查是否支持
 function isSpeechRecognitionSupported() {
@@ -1274,8 +1431,8 @@ function monitorAudioLevel() {
     requestAnimationFrame(monitorAudioLevel);
 }
 
-// ── 开始录音（用独立流，不干扰监听）──
-async function startRecording() {
+// ── 开始录音（复用 monitorStream，不重新获取麦克风）──
+function startRecording() {
     if (voiceRecording || cooldownActive) return;
     voiceRecording = true;
     audioChunks = [];
@@ -1286,24 +1443,15 @@ async function startRecording() {
     const recordStartTime = Date.now();
 
     try {
-        // 不指定 sampleRate，让浏览器用原生采样率（audioBlobToPCM 会重采样）
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-            }
-        });
-
+        // 复用 monitorStream，避免每次录音都重新申请麦克风权限
         let mimeType = 'audio/webm;codecs=pcm';
         if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/webm';
         if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'audio/mp4';
         if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
 
         mediaRecorder = mimeType
-            ? new MediaRecorder(stream, { mimeType })
-            : new MediaRecorder(stream);
+            ? new MediaRecorder(monitorStream, { mimeType })
+            : new MediaRecorder(monitorStream);
 
         const _recMimeType = mediaRecorder.mimeType || mimeType || 'audio/webm'; // 闭包保存
         mediaRecorder.ondataavailable = (e) => {
@@ -1311,8 +1459,7 @@ async function startRecording() {
         };
 
         mediaRecorder.onstop = async () => {
-            stream.getTracks().forEach(track => track.stop());
-
+            // 不关闭 monitorStream，保持麦克风权限复用
             const recordDuration = Date.now() - recordStartTime;
 
             // 太短了，丢弃（可能是噪音）
@@ -1358,7 +1505,7 @@ async function startRecording() {
 
         mediaRecorder.onerror = (e) => {
             console.log('[语音监听] MediaRecorder 错误:', e.error);
-            stream.getTracks().forEach(track => track.stop());
+            // 不关闭 monitorStream，保持麦克风权限复用
             voiceRecording = false;
             updateVoiceStatus('listening');
         };
@@ -1843,11 +1990,11 @@ async function processVoiceCommand(text) {
     speak('抱歉，我没有听懂，请再说一次');
 }
 
-// 调用百度短语音识别 API
-async function recognizeWithBaidu(audioBlob, mimeType) {
+// 调用百度短语音识别 API（含重试）
+async function recognizeWithBaidu(audioBlob, mimeType, retry = 0) {
     // 百度 API 要求的音频格式：pcm（不带头）或 wav（带标准头）
     const pcmData = await audioBlobToPCM(audioBlob);
-    console.log('[语音识别] PCM 数据大小:', pcmData.byteLength, '字节');
+    console.log('[语音识别] PCM 数据大小:', pcmData.byteLength, '字节', retry ? '[重试#' + retry + ']' : '');
 
     if (pcmData.byteLength < 100) {
         throw new Error('音频数据过短，请录制更长时间');
@@ -1860,7 +2007,7 @@ async function recognizeWithBaidu(audioBlob, mimeType) {
     const WORKER_URL = 'https://fragrant-salad-45ab.t0lloyd0t.workers.dev/baidu-asr';
 
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 8000);
+    const tid = setTimeout(() => ctrl.abort(), 8000);  // 8秒超时，正常网络下足够
 
     let data;
     try {
@@ -1874,10 +2021,25 @@ async function recognizeWithBaidu(audioBlob, mimeType) {
             signal: ctrl.signal,
         });
         clearTimeout(tid);
+
+        // 如果 Worker 返回错误，重试一次
+        if (!response.ok && retry < 1) {
+            console.log('[语音识别] Worker 返回异常，重试...', response.status);
+            await new Promise(r => setTimeout(r, 1000));
+            return recognizeWithBaidu(audioBlob, mimeType, retry + 1);
+        }
+
         data = await response.json();
     } catch (e) {
         clearTimeout(tid);
-        if (e.name === 'AbortError') throw new Error('识别超时，请重试');
+        if (e.name === 'AbortError') {
+            if (retry < 1) {
+                console.log('[语音识别] 超时，重试一次...');
+                await new Promise(r => setTimeout(r, 1000));
+                return recognizeWithBaidu(audioBlob, mimeType, retry + 1);
+            }
+            throw new Error('识别超时，请重试');
+        }
         throw e;
     }
 
@@ -2284,10 +2446,37 @@ async function speak(text) {
 
 function speakCurrentStep() {
     const step = state.pathSteps[state.currentStep];
-    if (step) {
-        speak(`第${state.currentStep+1}步：${step.instruction}。${step.hint}`);
+    if (!step) return;
+
+    // 根据步骤类型强化语音提示
+    let text;
+
+    if (step.isArrival) {
+        // 到达目的地：强提示
+        text = `🎉 已到达目的地：${step.instruction.replace('到达 ', '')}！${step.hint}`;
+        playSuccessSound();
+        hapticFeedback("success");
+    } else if (step.isFloorChange) {
+        // 换层：强调楼层
+        const floorWord = step.toFloor > step.fromFloor ? "上楼" : "下楼";
+        text = `⚠️ ${floorWord}！请注意安全！到达第 ${step.toFloor} 层后，继续沿走廊前行。`;
+        playStepSound();
+        hapticFeedback("medium");
+    } else if (step.isTurn) {
+        // 转向：强调方向
+        const turnText = step.instruction;
+        const turnEmphasis = turnText.includes("左转") ? "注意左方来车！" :
+                            turnText.includes("右转") ? "注意右方来车！" : "请小心转弯！";
+        text = `⏩ ${turnText}。${turnEmphasis}`;
+        playStepSound();
+        hapticFeedback("light");
+    } else {
+        // 普通步骤
+        text = `第 ${state.currentStep+1} 步：${step.instruction}。${step.hint}`;
         playStepSound();
     }
+
+    speak(text);
 }
 
 function hapticFeedback(type = "light") {

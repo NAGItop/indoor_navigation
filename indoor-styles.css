@@ -646,6 +646,56 @@ body {
     color: var(--color-text-muted);
 }
 
+/* ── 转向步骤 ──────────────────────────── */
+.step-item.is-turn .step-instruction {
+    color: #60a5fa;
+    font-weight: 600;
+}
+.step-item.is-turn.is-active {
+    background: rgba(96, 165, 250, 0.12);
+    border-left: 3px solid #60a5fa;
+}
+
+/* ── 换层步骤 ──────────────────────────── */
+.step-item.is-floor-change {
+    background: rgba(245, 158, 11, 0.08);
+    border-left: 3px solid #f59e0b;
+}
+.step-item.is-floor-change .step-instruction {
+    color: #f59e0b;
+    font-weight: 600;
+    font-size: 1.05rem;
+}
+.step-item.is-floor-change.is-active {
+    background: rgba(245, 158, 11, 0.18);
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.25);
+}
+
+/* ── 到达步骤 ──────────────────────────── */
+.step-item.is-arrival {
+    background: rgba(16, 185, 129, 0.1);
+    border-left: 3px solid #10b981;
+}
+.step-item.is-arrival .step-instruction {
+    color: #10b981;
+    font-weight: 700;
+    font-size: 1.1rem;
+}
+.step-item.is-arrival.is-active {
+    background: rgba(16, 185, 129, 0.2);
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+}
+.step-item.is-arrival .step-number {
+    background: #10b981;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
+
+/* 当前激活的转向/到达步骤也高亮 */
+.step-item.is-turn.is-active .step-number,
+.step-item.is-floor-change.is-active .step-number {
+    box-shadow: 0 0 14px currentColor;
+}
+
 .step-actions {
     display: flex;
     align-items: center;
