@@ -1815,6 +1815,11 @@ function executeAIIntent(parsed) {
             }
             return true;
         }
+        case 'sos': {
+            triggerSOS();
+            speak('紧急求助已发起');
+            return true;
+        }
         case 'reply':
             return true; // 纯语音回复，不需要执行操作
         default:
@@ -1892,8 +1897,9 @@ async function processVoiceCommand(text) {
         if (parsed && parsed.action && parsed.action !== 'none') {
             // 执行 AI 意图（set_end / set_start / plan / clear 等）
             executeAIIntent(parsed);
-            // 如果 AI 有回复文本，播报它
-            if (parsed.reply) speak(parsed.reply);
+            // plan 动作：路线摘要已由 planRoute 里的代码 speak() 生成，不要被 AI 瞎编的 reply 覆盖
+            // 其他动作：如果 AI 有回复文本，播报它
+            if (parsed.action !== 'plan' && parsed.reply) speak(parsed.reply);
             return; // ✅ AI 成功处理后直接返回，不再走关键词降级
         }
     }
@@ -1909,6 +1915,13 @@ async function processVoiceCommand(text) {
     const hasControl = controlKeywords.some(k => text.includes(k));
 
     // 控制指令检测
+    // 紧急求助（优先检测）
+    const sosKeywords = ['紧急', '求助', '救命', '帮忙', 'SOS', '报警'];
+    if (sosKeywords.some(k => text.toLowerCase().includes(k))) {
+        triggerSOS();
+        speak('紧急求助已发起');
+        return;
+    }
     if (text.includes('开始') || text.includes('规划')) {
         const planBtn = document.getElementById('planBtn');
         if (planBtn) {
