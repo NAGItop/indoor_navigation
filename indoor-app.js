@@ -1637,8 +1637,8 @@ ${roomList}
 
 ## 回复格式（必须严格返回 JSON）
 {
-  "intent": "navigate|control|help|chat|switch_floor",
-  "action": "set_start|set_end|plan|next_step|prev_step|clear|switch_floor|reply|none",
+  "intent": "navigate|control|help|chat|switch_floor|sos",
+  "action": "set_start|set_end|plan|next_step|prev_step|clear|switch_floor|reply|sos|none",
   "target_room_id": "房间ID，如 r1_101（仅 navigate 意图需要）",
   "target_floor": 楼层数字（仅 switch_floor 需要）,
   "reply": "给用户的语音回复文字，简洁友好，一句话",
@@ -1650,6 +1650,7 @@ ${roomList}
 - control: 导航控制。action=plan(开始规划) / next_step / prev_step / clear(清除路线)
 - switch_floor: 切换楼层。action=switch_floor
 - help: 用户遇到困难或求助（"我迷路了""看不清""帮帮我"），给予安抚和指引
+- sos: 用户请求紧急求助（"紧急呼叫""紧急求助""救命""报警"），action=sos，立即触发紧急求助弹窗
 - chat: 闲聊或询问（"几点了""谢谢"），简短回应
 - none: 无法理解，让用户重新说
 
