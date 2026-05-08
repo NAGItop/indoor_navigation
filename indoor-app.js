@@ -1385,6 +1385,12 @@ let _dbgLogTimer = 0;
 function monitorAudioLevel() {
     if (!voiceListening || !monitorAnalyser) return;
 
+    // 语音播报中 → 暂停监听，避免扬声器声音被麦克风拾音
+    if (isSpeaking) {
+        requestAnimationFrame(monitorAudioLevel);
+        return;
+    }
+
     const bufferLength = monitorAnalyser.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
     monitorAnalyser.getByteFrequencyData(dataArray);
@@ -1907,7 +1913,6 @@ async function processVoiceCommand(text) {
         const planBtn = document.getElementById('planBtn');
         if (planBtn) {
             planBtn.click();
-            speak('已开始规划路线');
             return;
         }
     }
@@ -2450,6 +2455,12 @@ async function speak(text) {
     // 加入队列，等待前面的说完再播
     speechQueue.push(text);
     if (isSpeaking) return;
+
+    // 如果正在录音，先停掉（避免把刚播报的声音录进去）
+    if (voiceRecording) {
+        console.log('[TTS] 播报前停止正在进行的录音');
+        stopRecording();
+    }
     
     isSpeaking = true;
     while (speechQueue.length > 0) {
@@ -2457,29 +2468,6 @@ async function speak(text) {
         await _doSpeak(next);
     }
     isSpeaking = false;
-}
-    // 始终更新界面文字（无论能否播音，视障用户的辅助技术也能读到）
-    const el = document.querySelector(".voice-text");
-    if (el) el.textContent = text;
-    
-    if (!state.voiceEnabled) return;
-    
-    // 移动端优先用系统语音合成（不依赖网络，不受CORS限制）
-    if (isMobile()) {
-        console.log('[TTS] 移动端 → 优先 speechSynthesis');
-        const browserSuccess = await speakWithBrowser(text);
-        if (browserSuccess) return;
-        // 系统语音失败再尝试百度TTS
-        console.log('[TTS] speechSynthesis 失败，尝试百度TTS');
-    }
-    
-    // 电脑端（或移动端降级）：百度语音合成
-    const baiduSuccess = await speakWithBaidu(text);
-    if (baiduSuccess) return;
-    
-    // 百度也失败 → 最后兜底用系统语音
-    console.log('[TTS] 百度TTS失败，降级 speechSynthesis');
-    await speakWithBrowser(text);
 }
 
 function speakCurrentStep() {
