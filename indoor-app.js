@@ -2421,8 +2421,43 @@ function speakWithBrowser(text) {
     });
 }
 
-// 语音播报
+// 语音播报队列（防止重叠打断）
+let speechQueue = [];
+let isSpeaking = false;
+
+async function _doSpeak(text) {
+    // 始终更新界面文字
+    const el = document.querySelector(".voice-text");
+    if (el) el.textContent = text;
+    
+    if (!state.voiceEnabled) return;
+
+    // 移动端优先用系统语音合成
+    if (isMobile()) {
+        const browserSuccess = await speakWithBrowser(text);
+        if (browserSuccess) return;
+    }
+    
+    // 电脑端：百度语音合成
+    const baiduSuccess = await speakWithBaidu(text);
+    if (baiduSuccess) return;
+    
+    // 兜底：系统语音
+    await speakWithBrowser(text);
+}
+
 async function speak(text) {
+    // 加入队列，等待前面的说完再播
+    speechQueue.push(text);
+    if (isSpeaking) return;
+    
+    isSpeaking = true;
+    while (speechQueue.length > 0) {
+        const next = speechQueue.shift();
+        await _doSpeak(next);
+    }
+    isSpeaking = false;
+}
     // 始终更新界面文字（无论能否播音，视障用户的辅助技术也能读到）
     const el = document.querySelector(".voice-text");
     if (el) el.textContent = text;
@@ -2468,9 +2503,9 @@ function speakCurrentStep() {
     } else if (step.isTurn) {
         // 转向：强调方向
         const turnText = step.instruction;
-        const turnEmphasis = turnText.includes("左转") ? "注意左方来车！" :
-                            turnText.includes("右转") ? "注意右方来车！" : "请小心转弯！";
-        text = `⏩ ${turnText}。${turnEmphasis}`;
+        const turnEmphasis = turnText.includes("左转") ? "请沿走廊左侧通行。" :
+                            turnText.includes("右转") ? "请沿走廊右侧通行。" : "请注意转角处。";
+        text = `${turnText}。${turnEmphasis}`;
         playStepSound();
         hapticFeedback("light");
     } else {
